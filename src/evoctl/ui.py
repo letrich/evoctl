@@ -138,10 +138,11 @@ MIXER_CHANNELS = (
     MixerChannel("DAW 2", (5,)),
     MixerChannel("DAW 3", (6,)),
     MixerChannel("DAW 4", (7,)),
-    MixerChannel("LOOP-BACK 1+2", (8, 9)),
+    MixerChannel("LOOP-BACK 1", (8,)),
+    MixerChannel("LOOP-BACK 2", (9,)),
 )
 
-MIX_LAYOUT_VERSION = 2
+MIX_LAYOUT_VERSION = 3
 CONFIGURATION_FORMAT = "evoctl-mixer-configuration"
 CONFIGURATION_VERSION = 1
 
@@ -805,6 +806,18 @@ class MainWindow(QMainWindow):
                 if sources in by_sources:
                     raise ValueError(f"{key} contains duplicate source IDs")
                 by_sources[sources] = entry
+            legacy_loopback = by_sources.pop((8, 9), None)
+            if legacy_loopback is not None:
+                if (8,) in by_sources or (9,) in by_sources:
+                    raise ValueError(f"{key} contains duplicate loop-back channels")
+                legacy_pans = legacy_loopback.get("pans")
+                if not isinstance(legacy_pans, list) or len(legacy_pans) != 2:
+                    raise ValueError(f"{key} has an invalid paired loop-back pan")
+                for source, pan in zip((8, 9), legacy_pans, strict=True):
+                    channel = dict(legacy_loopback)
+                    channel["sources"] = [source]
+                    channel["pans"] = [pan]
+                    by_sources[(source,)] = channel
             if set(by_sources) != set(expected):
                 raise ValueError(f"{key} does not match the EVO 8 mixer layout")
 
@@ -965,7 +978,8 @@ class MainWindow(QMainWindow):
             (snapshot.playback[1],),
             (snapshot.playback[2],),
             (snapshot.playback[3],),
-            snapshot.capture[4:6],
+            (snapshot.capture[4],),
+            (snapshot.capture[5],),
         )
         any_solo = any(strip.solo.isChecked() for strip in self.input_strips)
         output_contributions: tuple[list[float], list[float]] = ([], [])
@@ -1061,7 +1075,7 @@ class MainWindow(QMainWindow):
         return f"mix/{pair}/strip/{strip}/{field}"
 
     def _migrate_mix_settings(self) -> None:
-        """Split saved DAW stereo strips into four mono strips once."""
+        """Migrate saved paired channels to the current all-mono layout."""
         if self.settings is None:
             return
         version = self.settings.value("state/version", 0, type=int)
@@ -1070,14 +1084,13 @@ class MainWindow(QMainWindow):
 
         fields = ("fader", "pan", "pan_left", "pan_right", "mute", "solo")
         for pair in (0, 1):
-            old: dict[int, dict[str, object]] = {}
-            for index in (4, 5, 6):
+            def read_state(index: int) -> dict[str, object]:
                 values: dict[str, object] = {}
                 for field in fields:
                     key = self._mix_key(pair, index, field)
                     if self.settings.contains(key):
                         values[field] = self.settings.value(key)
-                old[index] = values
+                return values
 
             def copy_common(source: dict[str, object], destination: int) -> None:
                 for field in ("fader", "mute", "solo"):
@@ -1086,35 +1099,55 @@ class MainWindow(QMainWindow):
                             self._mix_key(pair, destination, field), source[field]
                         )
 
-            for old_index, left_index, right_index in ((4, 4, 5), (5, 6, 7)):
-                source = old[old_index]
-                copy_common(source, left_index)
-                copy_common(source, right_index)
-                legacy_pan = source.get("pan")
-                left_pan = source.get("pan_left", legacy_pan if legacy_pan is not None else -100)
-                right_pan = source.get("pan_right", legacy_pan if legacy_pan is not None else 100)
+            if version < 2:
+                old = {index: read_state(index) for index in (4, 5, 6)}
+                for old_index, left_index, right_index in ((4, 4, 5), (5, 6, 7)):
+                    source = old[old_index]
+                    copy_common(source, left_index)
+                    copy_common(source, right_index)
+                    legacy_pan = source.get("pan")
+                    left_pan = source.get(
+                        "pan_left", legacy_pan if legacy_pan is not None else -100
+                    )
+                    right_pan = source.get(
+                        "pan_right", legacy_pan if legacy_pan is not None else 100
+                    )
+                    self.settings.setValue(
+                        self._mix_key(pair, left_index, "pan"), left_pan
+                    )
+                    self.settings.setValue(
+                        self._mix_key(pair, right_index, "pan"), right_pan
+                    )
+
+                loopback = old[6]
+                copy_common(loopback, 8)
+                legacy_pan = loopback.get("pan")
                 self.settings.setValue(
-                    self._mix_key(pair, left_index, "pan"), left_pan
+                    self._mix_key(pair, 8, "pan_left"),
+                    loopback.get(
+                        "pan_left", legacy_pan if legacy_pan is not None else -100
+                    ),
                 )
                 self.settings.setValue(
-                    self._mix_key(pair, right_index, "pan"), right_pan
+                    self._mix_key(pair, 8, "pan_right"),
+                    loopback.get(
+                        "pan_right", legacy_pan if legacy_pan is not None else 100
+                    ),
                 )
 
-            loopback = old[6]
-            copy_common(loopback, 8)
-            legacy_pan = loopback.get("pan")
-            self.settings.setValue(
-                self._mix_key(pair, 8, "pan_left"),
-                loopback.get(
+            if version < 3:
+                loopback = read_state(8)
+                copy_common(loopback, 8)
+                copy_common(loopback, 9)
+                legacy_pan = loopback.get("pan")
+                left_pan = loopback.get(
                     "pan_left", legacy_pan if legacy_pan is not None else -100
-                ),
-            )
-            self.settings.setValue(
-                self._mix_key(pair, 8, "pan_right"),
-                loopback.get(
+                )
+                right_pan = loopback.get(
                     "pan_right", legacy_pan if legacy_pan is not None else 100
-                ),
-            )
+                )
+                self.settings.setValue(self._mix_key(pair, 8, "pan"), left_pan)
+                self.settings.setValue(self._mix_key(pair, 9, "pan"), right_pan)
         self.settings.setValue("state/version", MIX_LAYOUT_VERSION)
         self.settings.sync()
 

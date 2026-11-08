@@ -186,13 +186,13 @@ official EVO 8 mixer documentation and screenshots are used as the visual and
 workflow reference: the user works with source channel strips and a selected
 output mix, not a raw crosspoint table.
 
-The current EVO 8 layout deliberately exposes the ten matrix sources as four
-mono microphone strips, four mono DAW strips, and one paired Loop-back 1+2
-strip. This follows the requested Linux workflow rather than reproducing the
-official DAW stereo/mono linking switch. Destinations 0–1 form the green Master
-Mix for Outputs 1+2; destinations 2–3 form the optional yellow Artist Mix for
-Outputs 3+4. Mic preamp controls are revealed from the View menu, and Artist
-Mix is enabled from the Setup menu.
+The current EVO 8 layout deliberately exposes all ten matrix sources as mono:
+four microphone strips, four DAW strips, and two loop-back strips. This follows
+the requested Linux workflow rather than reproducing the official stereo/mono
+linking switch. Destinations 0–1 form the green Master Mix for Outputs 1+2;
+destinations 2–3 form the optional yellow Artist Mix for Outputs 3+4. Mic
+preamp controls are revealed from the View menu, and Artist Mix is enabled from
+the Setup menu.
 
 Reference: <https://docs.audient.com/evo8/evo-mixer-configurations/>
 

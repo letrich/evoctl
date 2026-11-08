@@ -78,17 +78,28 @@ class UiReadbackTests(unittest.TestCase):
             [(4,), (5,), (6,), (7,)],
         )
         self.assertTrue(all(len(strip.pans) == 1 for strip in daw_strips))
+        loopback_strips = window.input_strips[8:10]
+        self.assertEqual(
+            [strip.spec.name for strip in loopback_strips],
+            ["LOOP-BACK 1", "LOOP-BACK 2"],
+        )
+        self.assertEqual(
+            [strip.spec.sources for strip in loopback_strips], [(8,), (9,)]
+        )
+        self.assertTrue(all(len(strip.pans) == 1 for strip in loopback_strips))
         window.close()
 
-    def test_loopback_stereo_pan_changes_channel_and_master_indication(self) -> None:
+    def test_loopback_mono_pans_change_channel_and_master_indication(self) -> None:
         window = MainWindow(
             Evo8Controller(DemoTransport()), connected=True, status_text="TEST"
         )
         window.input_strips[8].fader.setValue(-12)
-        window.input_strips[8].pans[1].setValue(100)
+        window.input_strips[8].pans[0].setValue(-100)
+        window.input_strips[9].fader.setValue(-12)
+        window.input_strips[9].pans[0].setValue(100)
         window._meter_reader = FixedMeterReader(
             MeterSnapshot(
-                capture=(SILENCE_DB,) * 5 + (-14.0,),
+                capture=(SILENCE_DB,) * 4 + (-10.0, -14.0),
                 playback=(SILENCE_DB,) * 6,
                 capture_seen=True,
                 playback_seen=True,
@@ -97,19 +108,23 @@ class UiReadbackTests(unittest.TestCase):
 
         window._update_meters()
 
-        self.assertEqual(window.input_strips[8].meter._levels, [SILENCE_DB, -26.0])
-        self.assertEqual(window.master.meter._levels, [SILENCE_DB, -26.0])
+        self.assertEqual(window.input_strips[8].meter._levels, [-22.0])
+        self.assertEqual(window.input_strips[9].meter._levels, [-26.0])
+        self.assertEqual(window.master.meter._levels, [-22.0, -26.0])
         window.close()
 
-    def test_loopback_stereo_pans_write_all_four_crosspoints(self) -> None:
+    def test_loopback_mono_strips_write_independent_crosspoints(self) -> None:
         controller = Evo8Controller(DemoTransport())
         window = MainWindow(controller, connected=True, status_text="TEST")
-        strip = window.input_strips[8]
-        strip.fader.setValue(-12)
-        strip.pans[0].setValue(-100)
-        strip.pans[1].setValue(100)
+        left = window.input_strips[8]
+        left.fader.setValue(-12)
+        left.pans[0].setValue(-100)
+        right = window.input_strips[9]
+        right.fader.setValue(-12)
+        right.pans[0].setValue(100)
 
-        strip.write_effective_level(False)
+        left.write_effective_level(False)
+        right.write_effective_level(False)
 
         self.assertEqual(controller.read_mix_level(8, 0), -12)
         self.assertEqual(controller.read_mix_level(8, 1), SILENCE_DB)
@@ -220,7 +235,7 @@ class UiReadbackTests(unittest.TestCase):
             )
             second.close()
 
-    def test_saved_stereo_daw_settings_migrate_to_four_mono_strips(self) -> None:
+    def test_paired_settings_migrate_to_all_mono_strips(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = QSettings(
                 str(Path(directory) / "old-evoctl.ini"), QSettings.Format.IniFormat
@@ -252,10 +267,9 @@ class UiReadbackTests(unittest.TestCase):
             self.assertEqual(window.input_strips[7].fader.value(), -20)
             self.assertEqual(window.input_strips[7].pans[0].value(), 80)
             self.assertEqual(window.input_strips[8].fader.value(), -8)
-            self.assertEqual(
-                tuple(pan.value() for pan in window.input_strips[8].pans),
-                (-100, 100),
-            )
+            self.assertEqual(window.input_strips[8].pans[0].value(), -100)
+            self.assertEqual(window.input_strips[9].fader.value(), -8)
+            self.assertEqual(window.input_strips[9].pans[0].value(), 100)
             window.close()
 
     def test_mixer_configuration_round_trip_restores_both_mixes(self) -> None:
@@ -325,6 +339,55 @@ class UiReadbackTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not an evoctl"):
                 window.open_mixer_configuration(configuration)
             window.close()
+
+    def test_paired_loopback_configuration_opens_as_two_mono_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configuration = root / "paired-loopback.evoctl.json"
+            first = MainWindow(
+                Evo8Controller(DemoTransport()),
+                connected=True,
+                status_text="TEST",
+                settings=QSettings(
+                    str(root / "first.ini"), QSettings.Format.IniFormat
+                ),
+            )
+            first.input_strips[8].fader.setValue(-9)
+            first.input_strips[8].pans[0].setValue(-60)
+            first.input_strips[9].fader.setValue(-9)
+            first.input_strips[9].pans[0].setValue(70)
+            first.save_mixer_configuration(configuration)
+            document = json.loads(configuration.read_text(encoding="utf-8"))
+            for entries in document["mixes"].values():
+                left = next(entry for entry in entries if entry["sources"] == [8])
+                right = next(entry for entry in entries if entry["sources"] == [9])
+                paired = dict(left)
+                paired["name"] = "LOOP-BACK 1+2"
+                paired["sources"] = [8, 9]
+                paired["pans"] = [left["pans"][0], right["pans"][0]]
+                entries.remove(left)
+                entries.remove(right)
+                entries.append(paired)
+            configuration.write_text(
+                json.dumps(document, indent=2) + "\n", encoding="utf-8"
+            )
+
+            second = MainWindow(
+                Evo8Controller(DemoTransport()),
+                connected=True,
+                status_text="TEST",
+                settings=QSettings(
+                    str(root / "second.ini"), QSettings.Format.IniFormat
+                ),
+            )
+            second.open_mixer_configuration(configuration)
+
+            self.assertEqual(second.input_strips[8].fader.value(), -9)
+            self.assertEqual(second.input_strips[8].pans[0].value(), -60)
+            self.assertEqual(second.input_strips[9].fader.value(), -9)
+            self.assertEqual(second.input_strips[9].pans[0].value(), 70)
+            first.close()
+            second.close()
 
 
 if __name__ == "__main__":

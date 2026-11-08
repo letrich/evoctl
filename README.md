@@ -126,7 +126,7 @@ configuration, and usbmon permission helper:
 ```sh
 ./packaging/debian/build-deb.sh
 sudo apt install linux-headers-$(uname -r)
-sudo apt install ./dist/evoctl_0.1.1_all.deb
+sudo apt install ./dist/evoctl_0.1.2_all.deb
 ```
 
 The package declares Python, PySide6 QtWidgets, DKMS, udev, make, and kmod as
@@ -147,8 +147,7 @@ buttons and encoder appear in the UI without reopening it.
 The main window follows the official EVO Mixer workflow instead of presenting
 the 10×4 hardware matrix directly:
 
-- Mic 1–4 and DAW 1–4 appear as independent mono strips; Loop-back 1+2
-  remains paired;
+- Mic 1–4, DAW 1–4, and Loop-back 1–2 appear as ten independent mono strips;
 - Outputs 1+2 is the green-accented Master Mix;
 - `Setup > Enable Artist Mix` enables the independent, yellow-accented mix for
   Outputs 3+4;
@@ -157,10 +156,9 @@ the 10×4 hardware matrix directly:
 
 Mixer faders and pan controls are backed by the EVO 8 mixer-unit crosspoints;
 the matrix is an implementation detail and is not shown as a separate routing
-page. Every microphone and DAW strip has its own pan and fader. The remaining
-paired Loop-back strip has independent `LEFT` and `RIGHT` pan controls and one
-shared fader. All four loop-back crosspoints are written, so either source can
-be placed anywhere in the selected output mix.
+page. Every microphone, DAW, and loop-back source has its own pan, fader, mute,
+and solo controls. Each source writes both output crosspoints, so it can be
+placed anywhere in the selected output mix.
 
 The apparent fader range also follows the official application. The device
 range is −128 to +6 dB, but the slider uses the recovered 179-step audio taper
@@ -175,9 +173,8 @@ reflect audio sent from the DAW to the EVO. Direct-monitor audio mixed only
 inside the hardware is not present in that playback stream.
 
 Channel meters are post-fader for the selected mix: fader, pan, mute, and solo
-all affect the indication. The paired loop-back strip's two meters show its
-panned L/R mix, including crossfeed when either channel is moved away from its
-default side.
+all affect the indication. Loop-back 1 and Loop-back 2 are metered independently
+and their pan positions are reflected in the master indication.
 The master L/R meter combines the active source levels and then applies the
 selected output volume and mute. With one active source its dB movement is
 exact; with several simultaneous sources the master uses a power-sum estimate
