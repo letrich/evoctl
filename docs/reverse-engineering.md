@@ -213,6 +213,13 @@ DAW. PipeWire/Pulse capture remains an optional fallback when usbmon is not
 available. The usbmon ABI and its security boundary are documented by the
 Linux kernel: <https://docs.kernel.org/usb/usbmon.html>.
 
+The captured streams are pre-mixer source samples. evoctl applies the selected
+mix's fader, pan, mute, and solo state to channel indications. It reconstructs
+master L/R from those post-fader peaks and applies output volume and mute. The
+master value is exact for a single source and a power-sum estimate for multiple
+simultaneous sources; phase relationships and final internal DSP samples are
+not exposed by the device stream.
+
 ### Settings ownership and startup restore
 
 The official application contains EVO 8-specific settings serialiser and

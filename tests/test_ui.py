@@ -12,7 +12,21 @@ from PySide6.QtWidgets import QApplication
 
 from evoctl.__main__ import DemoTransport
 from evoctl.controller import Evo8Controller
+from evoctl.meter import MeterSnapshot, SILENCE_DB
 from evoctl.ui import MainWindow
+
+
+class FixedMeterReader:
+    status = "TEST METERS"
+
+    def __init__(self, snapshot: MeterSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def snapshot(self) -> MeterSnapshot:
+        return self._snapshot
+
+    def stop(self) -> None:
+        pass
 
 
 class UiReadbackTests(unittest.TestCase):
@@ -43,6 +57,50 @@ class UiReadbackTests(unittest.TestCase):
 
         self.assertEqual(window.input_strips[0].fader.value(), -32)
         self.assertEqual(window.input_strips[0].pan.value(), 25)
+        window.close()
+
+    def test_meters_follow_mix_fader_and_output_volume(self) -> None:
+        window = MainWindow(
+            Evo8Controller(DemoTransport()), connected=True, status_text="TEST"
+        )
+        window.input_strips[4].fader.setValue(-20)
+        window.master.volume.setValue(-6)
+        window._meter_reader = FixedMeterReader(
+            MeterSnapshot(
+                capture=(SILENCE_DB,) * 6,
+                playback=(-10.0, -12.0, SILENCE_DB, SILENCE_DB, SILENCE_DB, SILENCE_DB),
+                capture_seen=True,
+                playback_seen=True,
+            )
+        )
+
+        window._update_meters()
+
+        self.assertEqual(window.input_strips[4].meter._levels, [-30.0, -32.0])
+        self.assertEqual(window.master.meter._levels, [-36.0, -38.0])
+        window.close()
+
+    def test_artist_mix_meter_uses_sources_routed_to_outputs_3_and_4(self) -> None:
+        window = MainWindow(
+            Evo8Controller(DemoTransport()), connected=True, status_text="TEST"
+        )
+        window.artist_action.setChecked(True)
+        window.select_mix(1)
+        window.input_strips[4].fader.setValue(-10)
+        window.master.volume.setValue(0)
+        window._meter_reader = FixedMeterReader(
+            MeterSnapshot(
+                capture=(SILENCE_DB,) * 6,
+                playback=(-10.0, -12.0, SILENCE_DB, SILENCE_DB, SILENCE_DB, SILENCE_DB),
+                capture_seen=True,
+                playback_seen=True,
+            )
+        )
+
+        window._update_meters()
+
+        self.assertEqual(window.active_pair, 1)
+        self.assertEqual(window.master.meter._levels, [-20.0, -22.0])
         window.close()
 
     def test_mixer_settings_survive_restart_and_restore_device(self) -> None:

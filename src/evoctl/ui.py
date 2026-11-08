@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from .controller import Evo8Controller, InputState, OutputState
-from .meter import AudioMeterReader, SILENCE_DB
+from .meter import AudioMeterReader, SILENCE_DB, apply_gain_db, combine_peaks_db
 
 
 COLORS = {
@@ -740,7 +740,7 @@ class MainWindow(QMainWindow):
             self.sync_timer.start()
 
     def start_audio_meters(self) -> None:
-        """Start graph-based meters without opening an ALSA device."""
+        """Start passive meters without opening an ALSA device."""
         if self._meter_reader is not None:
             return
         self._meter_reader = AudioMeterReader()
@@ -761,10 +761,45 @@ class MainWindow(QMainWindow):
             snapshot.playback[2:4],
             snapshot.capture[4:6],
         )
+        any_solo = any(strip.solo.isChecked() for strip in self.input_strips)
+        output_contributions: tuple[list[float], list[float]] = ([], [])
         for strip, levels in zip(self.input_strips, source_levels, strict=True):
-            strip.meter.set_levels(levels)
-        pair = self.active_pair * 2
-        self.master.meter.set_levels(snapshot.playback[pair : pair + 2])
+            suppressed = strip.mute.isChecked() or (
+                any_solo and not strip.solo.isChecked()
+            )
+            gain = -128 if suppressed else strip.fader.value()
+            strip.meter.set_levels(
+                tuple(apply_gain_db(level, gain) for level in levels)
+            )
+
+            if len(levels) == 1:
+                left_gain = gain
+                right_gain = gain
+                if gain > -128:
+                    if strip.pan.value() < 0:
+                        right_gain = max(
+                            -128, round(gain - abs(strip.pan.value()) * 1.28)
+                        )
+                    elif strip.pan.value() > 0:
+                        left_gain = max(
+                            -128, round(gain - strip.pan.value() * 1.28)
+                        )
+                output_contributions[0].append(
+                    apply_gain_db(levels[0], left_gain)
+                )
+                output_contributions[1].append(
+                    apply_gain_db(levels[0], right_gain)
+                )
+            else:
+                output_contributions[0].append(apply_gain_db(levels[0], gain))
+                output_contributions[1].append(apply_gain_db(levels[1], gain))
+
+        master_gain = -128 if self.master.mute.isChecked() else self.master.volume.value()
+        master_levels = tuple(
+            apply_gain_db(combine_peaks_db(contributions), master_gain)
+            for contributions in output_contributions
+        )
+        self.master.meter.set_levels(master_levels)
         self.meter_message.setText(self._meter_reader.status)
 
     def closeEvent(self, event: QCloseEvent) -> None:

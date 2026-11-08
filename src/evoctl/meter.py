@@ -1,4 +1,4 @@
-"""Non-exclusive EVO audio metering through the PipeWire/Pulse graph."""
+"""Non-exclusive EVO metering through usbmon or PipeWire/Pulse."""
 
 from __future__ import annotations
 
@@ -45,6 +45,19 @@ def peak_db(interleaved: array[float], channels: int) -> tuple[float, ...]:
         max(SILENCE_DB, 20.0 * math.log10(value)) if value else SILENCE_DB
         for value in peaks
     )
+
+
+def apply_gain_db(level_db: float, gain_db: float) -> float:
+    """Apply a mixer gain to one meter value, preserving the silence floor."""
+    if level_db <= SILENCE_DB or gain_db <= SILENCE_DB:
+        return SILENCE_DB
+    return max(SILENCE_DB, level_db + gain_db)
+
+
+def combine_peaks_db(levels: list[float]) -> float:
+    """Estimate a mixed peak from independent source peaks."""
+    power = sum(10 ** (level / 10.0) for level in levels if level > SILENCE_DB)
+    return 10.0 * math.log10(power) if power else SILENCE_DB
 
 
 def s32le_peak_db(payload: bytes, channels: int) -> tuple[float, ...]:

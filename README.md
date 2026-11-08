@@ -125,6 +125,13 @@ control panel neither opens nor duplicates its PCM streams. The playback meters
 reflect audio sent from the DAW to the EVO. Direct-monitor audio mixed only
 inside the hardware is not present in that playback stream.
 
+Channel meters are post-fader for the selected mix: fader, pan, mute, and solo
+all affect the indication. The master L/R meter combines the active source
+levels and then applies the selected output volume and mute. With one active
+source its dB movement is exact; with several simultaneous sources the master
+uses a power-sum estimate because the EVO does not expose its final internal
+DSP samples to the host.
+
 evoctl automatically stores application-level mixer state in
 `~/.config/evoctl/evoctl.conf`. On the next start it restores the selected mix,
 Artist Mix and preamp-view state, faders, pan, mute, and solo, and sends saved

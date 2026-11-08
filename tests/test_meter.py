@@ -8,6 +8,8 @@ import unittest
 
 from evoctl.meter import (
     SILENCE_DB,
+    apply_gain_db,
+    combine_peaks_db,
     extract_iso_payload,
     find_evo_sources,
     find_evo_usb_device,
@@ -24,6 +26,14 @@ class MeterTests(unittest.TestCase):
 
     def test_peak_db_uses_floor_for_silence(self) -> None:
         self.assertEqual(peak_db(array("f", [0.0, 0.0]), 2), (SILENCE_DB,) * 2)
+
+    def test_mixer_gain_changes_meter_level(self) -> None:
+        self.assertEqual(apply_gain_db(-12.0, -18.0), -30.0)
+        self.assertEqual(apply_gain_db(-12.0, -128.0), SILENCE_DB)
+
+    def test_equal_sources_sum_by_power(self) -> None:
+        self.assertAlmostEqual(combine_peaks_db([-12.0, -12.0]), -8.9897, places=3)
+        self.assertEqual(combine_peaks_db([SILENCE_DB]), SILENCE_DB)
 
     def test_evo_source_discovery(self) -> None:
         output = """\
