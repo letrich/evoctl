@@ -5,6 +5,8 @@ interfaces. The EVO 8 is the first supported device; the protocol and UI are
 structured so EVO 4 and EVO 16 profiles can be added without duplicating the
 transport layer.
 
+![evoctl main mixer window with active channel and master meters](docs/images/evoctl-main-window.png)
+
 The project is in active reverse-engineering and implementation. The current
 milestone contains:
 
