@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        modprobe -r evo_raw 2>/dev/null || true
+        if command -v dkms >/dev/null 2>&1; then
+            dkms remove -m evo_raw -v 0.2 --all 2>/dev/null || true
+        fi
+        ;;
+esac
+
+exit 0

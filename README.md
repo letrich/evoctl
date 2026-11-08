@@ -99,6 +99,41 @@ From the repository root:
 PYTHONPATH=src python3 -m evoctl --demo
 ```
 
+## Build a single-file application
+
+The application can be packaged as one executable Python zip application while
+continuing to use Python and PySide6 from the operating system:
+
+```sh
+./packaging/build-single-file.sh
+./dist/evoctl.pyz --demo
+```
+
+The generated `dist/evoctl.pyz` contains all evoctl Python modules but does not
+bundle Python, Qt, PySide6, the kernel helper, or udev configuration. Install
+the dependencies and `evo_raw` helper described above on every target system.
+This format is convenient for testing or copying a new application build over
+an existing system installation.
+
+## Build a Debian package
+
+For Debian and Ubuntu, the package builder produces a normal installable `.deb`
+with the application, desktop-menu entry, DKMS source, udev rule, modules-load
+configuration, and usbmon permission helper:
+
+```sh
+./packaging/debian/build-deb.sh
+sudo apt install linux-headers-$(uname -r)
+sudo apt install ./dist/evoctl_0.1.0_all.deb
+```
+
+The package declares Python, PySide6 QtWidgets, DKMS, udev, make, and kmod as
+dependencies, so `apt` installs any that are missing. It cannot express the
+running kernel's exact header package as a portable dependency; install the
+matching headers with the command above. Members of `dialout` receive control
+and read-only meter access as described in the concurrent-control section.
+Launch `EVO Control` from the desktop menu or run `evoctl` in a terminal.
+
 Omit `--demo` to open `/dev/evo8`. On first use, hardware writes happen only
 after an explicit UI change. Once local mixer state has been saved, it is sent
 back to the EVO matrix at startup, matching the official application's restore

@@ -1,0 +1,13 @@
+Package: evoctl
+Version: 0.1.0
+Section: sound
+Priority: optional
+Architecture: all
+Maintainer: Aleksey Khristolyubov
+Depends: python3 (>= 3.11), python3-pyside6.qtwidgets, dkms, make, udev, kmod
+Recommends: acl
+Suggests: pulseaudio-utils
+Description: Audient EVO 8 control panel for Linux
+ Native PySide6 mixer and monitor-control application for Audient EVO 8.
+ Includes the evo_raw DKMS helper for concurrent control while ALSA remains
+ available to a DAW, plus udev and usbmon access configuration.

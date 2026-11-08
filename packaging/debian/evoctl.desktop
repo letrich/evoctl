@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=EVO Control
+Comment=Control the Audient EVO 8 audio interface
+Exec=evoctl
+Icon=audio-card
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=Audient;EVO;audio;mixer;interface;

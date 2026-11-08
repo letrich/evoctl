@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = configure ]; then
+    if [ -x /usr/lib/dkms/common.postinst ]; then
+        /usr/lib/dkms/common.postinst evo_raw 0.2 /usr/src "" "${2-}"
+    fi
+
+    udevadm control --reload-rules || true
+    modprobe usbmon || true
+    modprobe evo_raw || true
+    udevadm trigger --subsystem-match=misc --sysname-match=evo8 || true
+
+    for device_path in /sys/bus/usb/devices/*; do
+        if [ -f "$device_path/idVendor" ] && \
+           [ -f "$device_path/idProduct" ] && \
+           [ "$(cat "$device_path/idVendor")" = 2708 ] && \
+           [ "$(cat "$device_path/idProduct")" = 0007 ]; then
+            /usr/libexec/evoctl/evoctl-usbmon-access \
+                "$(cat "$device_path/busnum")" || true
+        fi
+    done
+fi
+
+exit 0
