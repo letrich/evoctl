@@ -222,3 +222,7 @@ firmware-update implementation.
 
 See [docs/reverse-engineering.md](docs/reverse-engineering.md) for evidence,
 known control IDs, and remaining work.
+
+## License
+
+evoctl is released under the [MIT License](LICENSE).
