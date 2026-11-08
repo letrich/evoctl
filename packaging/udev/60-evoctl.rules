@@ -1,0 +1,2 @@
+# Audient EVO 8 control access for locally logged-in users and plugdev members.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2708", ATTR{idProduct}=="0007", MODE="0660", GROUP="plugdev", TAG+="uaccess"

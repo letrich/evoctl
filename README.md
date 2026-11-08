@@ -14,6 +14,54 @@ milestone contains:
 - a PySide6 control-panel shell with Inputs, Outputs, and Routing pages;
 - a demo mode and protocol unit tests that do not touch hardware.
 
+## Install dependencies
+
+On Ubuntu or Debian, install the PySide6 QtWidgets binding. Its package
+dependencies provide the matching QtCore and QtGui bindings:
+
+```sh
+sudo apt update
+sudo apt install python3-pyside6.qtwidgets
+```
+
+Verify the GUI binding:
+
+```sh
+python3 -c 'from PySide6.QtWidgets import QApplication; print("PySide6 QtWidgets: OK")'
+```
+
+No third-party Python USB package is required. The transport loads the system
+`libusb-1.0` library directly.
+
+## Grant USB access
+
+The EVO 8 enumerates as USB device `2708:0007`. Install the included udev rule
+to grant control-transfer access to the active desktop user and members of the
+`plugdev` group:
+
+```sh
+sudo install -Dm644 packaging/udev/60-evoctl.rules \
+  /etc/udev/rules.d/60-evoctl.rules
+sudo udevadm control --reload-rules
+```
+
+Disconnect and reconnect the EVO 8 after reloading the rules. A reboot is not
+required. Confirm that the device is present and that evoctl can open it:
+
+```sh
+lsusb -d 2708:0007
+PYTHONPATH=src python3 - <<'PY'
+from evoctl.usb import EvoUsbTransport
+
+with EvoUsbTransport():
+    print("EVO 8 USB access: OK")
+PY
+```
+
+Opening the device for this check does not issue a control read or write and
+does not detach `snd-usb-audio`. If access is still denied, confirm membership
+with `id -nG`; log out and back in after adding yourself to `plugdev`.
+
 ## Run the current UI
 
 From the repository root:
@@ -25,11 +73,6 @@ PYTHONPATH=src python3 -m evoctl --demo
 Omit `--demo` to open USB device `2708:0007`. The process needs permission to
 open the corresponding `/dev/bus/usb` node. Hardware writes happen only after
 an explicit UI change.
-
-The current environment provides Python and libusb. PySide6 package metadata
-is present, but the actual Qt bindings (including `PySide6.QtWidgets`) are not
-installed, so the GUI cannot start until that dependency is added. No system
-packages were installed while creating this project.
 
 ## Tests
 
