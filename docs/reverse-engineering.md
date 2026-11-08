@@ -33,12 +33,38 @@ The connected interface enumerates as:
 - interfaces 0-2: USB Audio Class 2, bound to `snd-usb-audio`
 - interface 3: USB DFU class, intentionally not used by normal controls
 
-Live USB and ALSA device nodes are available after installing the repository's
-udev rule. Opening the USB device alone is insufficient: class-interface reads
-return `LIBUSB_ERROR_IO` while `snd-usb-audio` owns AudioControl interface 0.
-Temporarily detaching and claiming only interface 0 makes the same reads
-succeed. Releasing the interface and reattaching the driver has been verified;
-the playback and capture streaming interfaces are never detached.
+Opening the usbfs device alone is insufficient: class-interface reads return
+`LIBUSB_ERROR_IO` while `snd-usb-audio` owns AudioControl interface 0.
+Temporarily detaching and claiming interface 0 makes those reads succeed, but
+runtime testing contradicted the initial cleanup assumption: detaching the
+AudioControl interface disconnects the shared ALSA card. Reattaching interface
+0 restores its sysfs driver link but does not reliably reconstruct the card for
+a running DAW; a physical USB reconnect may be required. The application no
+longer uses this transport.
+
+Changing the request recipient from interface (`0xa1`) to device, endpoint, or
+other (`0xa0`, `0xa2`, or `0xa3`) while leaving the kernel driver bound was
+tested read-only. The firmware rejected all three variants with a control-pipe
+stall, so changing request type is not a safe bypass.
+
+The safe transport uses the included `evo_raw` helper. It binds only unused DFU
+interface 3 to obtain the kernel `usb_device` handle, then forwards normal UAC2
+endpoint-zero requests with `usb_control_msg()`. Interfaces 0–2 remain owned by
+`snd-usb-audio`; the helper does not send DFU requests. The design was derived
+from the public-domain `vanzaho/audient-evo-py` implementation and hardened with
+reference-counted unplug/open-file lifetime handling.
+
+Live concurrency verification on kernel `7.0.0-38-generic` established:
+
+- `evo_raw` owned interface 3 while `snd-usb-audio` continuously owned
+  interfaces 0–2;
+- a six-channel, 48 kHz, signed-32-bit ALSA playback stream remained active
+  while the control panel loaded hardware state and performed an idempotent
+  Input 1 gain write;
+- a six-channel ALSA capture stream remained active during an output-state
+  control read;
+- playback reopened immediately after the control panel closed, with no USB
+  reconnect and no driver rebind.
 
 The first live read-only snapshot established:
 
@@ -79,7 +105,7 @@ Relevant REA evidence IDs from the primary application:
 The Windows program dynamically loads Thesycon's `TUSBAUDIO_*` API, including
 `AudioControlRequestSet` and `AudioControlRequestGet`. This API is only a
 Windows transport wrapper; the on-wire request is standard UAC2 and can be
-sent with libusb on Linux.
+sent through the Linux kernel helper without detaching the audio driver.
 
 ## EVO 8 entities and controls
 

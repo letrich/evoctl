@@ -5,3 +5,10 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.o
+Module.symvers
+modules.order

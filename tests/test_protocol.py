@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from evoctl.__main__ import DemoTransport
 from evoctl.controller import Evo8Controller
 from evoctl.protocol import (
     ControlAddress,
@@ -32,6 +33,13 @@ class RecordingTransport:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_demo_transport_persists_values(self) -> None:
+        transport = DemoTransport()
+        address = mixer_crosspoint(3, 2)
+        transport.write(address, bytes.fromhex("00f4"))
+        self.assertEqual(transport.read(address, 2), bytes.fromhex("00f4"))
+        self.assertEqual(transport.read(mixer_crosspoint(3, 0), 2), b"\0\0")
+
     def test_input_gain_setup_packet(self) -> None:
         address = ControlAddress(EntityId.INPUT, InputSelector.GAIN, 2)
         transfer = ControlTransfer.write(address, encode_q8_8(31.0, width=4))

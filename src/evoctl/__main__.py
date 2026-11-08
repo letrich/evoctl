@@ -6,20 +6,24 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from .controller import Evo8Controller
+from .kernel import EvoKernelTransport, KernelTransportError
 from .protocol import ControlAddress
 from .ui import MainWindow
-from .usb import DeviceNotFoundError, EvoUsbTransport, UsbError
 
 
 class DemoTransport:
     def __init__(self) -> None:
         self.writes: list[tuple[ControlAddress, bytes]] = []
+        self.values: dict[ControlAddress, bytes] = {}
 
     def write(self, address: ControlAddress, payload: bytes) -> None:
-        self.writes.append((address, bytes(payload)))
+        value = bytes(payload)
+        self.writes.append((address, value))
+        self.values[address] = value
 
     def read(self, address: ControlAddress, length: int = 4) -> bytes:
-        return bytes(length)
+        value = self.values.get(address, b"")
+        return value[:length].ljust(length, b"\0")
 
 
 class UnavailableTransport:
@@ -27,10 +31,10 @@ class UnavailableTransport:
         self.reason = reason
 
     def write(self, address: ControlAddress, payload: bytes) -> None:
-        raise UsbError(self.reason)
+        raise KernelTransportError(self.reason)
 
     def read(self, address: ControlAddress, length: int = 4) -> bytes:
-        raise UsbError(self.reason)
+        raise KernelTransportError(self.reason)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -49,24 +53,24 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName("evoctl")
     app.setOrganizationName("evoctl")
 
-    usb: EvoUsbTransport | None = None
+    device: EvoKernelTransport | None = None
     if args.demo:
         transport = DemoTransport()
         connected = True
         status = "DEMO MODE"
     else:
-        usb = EvoUsbTransport()
+        device = EvoKernelTransport()
         try:
-            usb.open()
-        except (DeviceNotFoundError, UsbError) as error:
+            device.open()
+        except KernelTransportError as error:
             transport = UnavailableTransport(str(error))
             connected = False
             status = "EVO 8 OFFLINE"
         else:
-            transport = usb
+            transport = device
             connected = True
             status = "EVO 8 CONNECTED"
-            app.aboutToQuit.connect(usb.close)
+            app.aboutToQuit.connect(device.close)
 
     window = MainWindow(Evo8Controller(transport), connected=connected, status_text=status)
     if connected and not args.demo:

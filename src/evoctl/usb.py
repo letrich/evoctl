@@ -73,19 +73,20 @@ class _LibUsb:
 
 @dataclass(slots=True)
 class EvoUsbTransport:
-    """Open one EVO and issue endpoint-zero control requests.
+    """Diagnostic libusb transport; unsafe for normal desktop use.
 
     Linux usbfs requires ownership of AudioControl interface 0 for EVO class
-    requests. The transport therefore detaches only that interface, claims it,
-    and reattaches the kernel driver when closed. Streaming interfaces remain
-    untouched.
+    requests. Detaching that interface disconnects the shared ALSA card and can
+    require a physical reconnect. Normal application code must use
+    :class:`evoctl.kernel.EvoKernelTransport` instead. Driver detachment is
+    disabled by default and must be explicitly opted into for diagnostics.
     """
 
     profile: DeviceProfile = EVO8
     timeout_ms: int = 1000
     control_interface: int = 0
     claim_control_interface: bool = True
-    detach_kernel_driver: bool = True
+    detach_kernel_driver: bool = False
     _api: _LibUsb = field(init=False, repr=False)
     _context: ctypes.c_void_p = field(init=False, repr=False)
     _handle: ctypes.c_void_p = field(init=False, repr=False)
@@ -167,7 +168,8 @@ class EvoUsbTransport:
             if not self.detach_kernel_driver:
                 raise UsbError(
                     "snd-usb-audio owns AudioControl interface 0; "
-                    "kernel-driver detachment is disabled"
+                    "refusing to detach it because that disconnects the ALSA "
+                    "card; install evo_raw and use EvoKernelTransport"
                 )
             result = self._api.lib.libusb_detach_kernel_driver(
                 self._handle, self.control_interface

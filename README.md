@@ -10,20 +10,24 @@ milestone contains:
 
 - a documented, byte-accurate UAC2 control-transfer model;
 - an EVO 8 protocol profile for input, output, and mixer controls;
-- a `libusb` transport that claims only AudioControl interface 0 and restores
-  `snd-usb-audio` when it closes;
+- an `evo_raw` kernel helper that provides control access without detaching
+  `snd-usb-audio` or interrupting a DAW;
 - a PySide6 mixer modeled on the official EVO 8 application workflow;
 - a demo mode and protocol unit tests that do not touch hardware.
 
 ## Install dependencies
 
-On Ubuntu or Debian, install the PySide6 QtWidgets binding. Its package
-dependencies provide the matching QtCore and QtGui bindings:
+On Ubuntu or Debian, install the GUI binding and kernel-module build tools:
 
 ```sh
 sudo apt update
-sudo apt install python3-pyside6.qtwidgets
+sudo apt install python3-pyside6.qtwidgets build-essential \
+  linux-headers-$(uname -r) dkms
 ```
+
+DKMS is strongly recommended because it automatically rebuilds the helper
+after kernel updates. The installer can work without it for the current kernel,
+but must then be run again after every kernel update.
 
 Verify the GUI binding:
 
@@ -31,40 +35,48 @@ Verify the GUI binding:
 python3 -c 'from PySide6.QtWidgets import QApplication; print("PySide6 QtWidgets: OK")'
 ```
 
-No third-party Python USB package is required. The transport loads the system
-`libusb-1.0` library directly.
+No third-party Python USB package is required.
 
-## Grant USB access
+## Install concurrent device control
 
-The EVO 8 enumerates as USB device `2708:0007`. Install the included udev rule
-to grant control-transfer access to the active desktop user and members of the
-`plugdev` group:
+Linux usbfs cannot issue EVO class-interface requests while `snd-usb-audio`
+owns AudioControl interface 0. Detaching that interface disconnects the shared
+ALSA card, makes the EVO unavailable to a DAW, and may require a physical USB
+reconnect. evoctl therefore does not detach it.
+
+Instead, the included `evo_raw` helper binds only the otherwise-unused DFU
+interface 3 and exposes `/dev/evo8`. AudioControl and both streaming interfaces
+remain continuously owned by `snd-usb-audio`.
+
+Build, install, and load the helper with:
 
 ```sh
-sudo install -Dm644 packaging/udev/60-evoctl.rules \
-  /etc/udev/rules.d/60-evoctl.rules
-sudo udevadm control --reload-rules
+sudo packaging/evo_raw/install.sh
 ```
 
-Disconnect and reconnect the EVO 8 after reloading the rules. A reboot is not
-required. Confirm that the device is present and that evoctl can open it:
+The script also installs the udev rule for members of the `dialout` group. If
+your account is not already a member, add it and then log out and back in:
 
 ```sh
-lsusb -d 2708:0007
-PYTHONPATH=src python3 - <<'PY'
-from evoctl.usb import EvoUsbTransport
+sudo usermod -aG dialout "$USER"
+```
 
-with EvoUsbTransport():
-    print("EVO 8 USB access: OK")
+Confirm that both the safe control device and normal ALSA device exist:
+
+```sh
+ls -l /dev/evo8
+aplay -l | grep -A2 EVO8
+PYTHONPATH=src python3 - <<'PY'
+from evoctl.kernel import EvoKernelTransport
+
+with EvoKernelTransport():
+    print("EVO 8 concurrent control access: OK")
 PY
 ```
 
-Opening the device for this check does not issue a control read or write. Linux
-requires evoctl to detach and claim AudioControl interface 0 while the process
-is open; the streaming interfaces are not detached, and `snd-usb-audio` is
-reattached when the transport closes. If access is still denied, confirm
-membership with `id -nG`; log out and back in after adding yourself to
-`plugdev`.
+Opening `/dev/evo8` for this check does not issue a control read or write and
+does not disturb ALSA, PipeWire, JACK, or an active DAW. Uninstall the helper
+with `sudo packaging/evo_raw/uninstall.sh`.
 
 ## Run the mixer
 
@@ -74,10 +86,9 @@ From the repository root:
 PYTHONPATH=src python3 -m evoctl --demo
 ```
 
-Omit `--demo` to open USB device `2708:0007`. The process needs permission to
-open the corresponding `/dev/bus/usb` node. Hardware writes happen only after
-an explicit UI change. On startup, the UI reads the current input, output, and
-mixer state from the interface.
+Omit `--demo` to open `/dev/evo8`. Hardware writes happen only after an explicit
+UI change. On startup, the UI reads the current input, output, and mixer state
+without taking the interface away from the DAW.
 
 The main window follows the official EVO Mixer workflow instead of presenting
 the 10×4 hardware matrix directly:
@@ -93,6 +104,8 @@ Mixer faders and pan controls are backed by the EVO 8 mixer-unit crosspoints;
 the matrix is an implementation detail and is not shown as a separate routing
 page. Signal meters are visual placeholders until the device's live metering
 transport has been recovered, so they do not yet display audio levels.
+Demo mode keeps an in-memory device state, so control values persist when
+switching between Master Mix and Artist Mix.
 
 ## Tests
 
@@ -105,7 +118,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 Normal mixer and preamp controls use USB Audio Class 2 `CUR` requests. Firmware
 update and DFU operations are deliberately out of scope until they have a
 separate, guarded implementation. Controls whose meaning is not yet proven are
-kept out of the UI.
+kept out of the UI. Although `evo_raw` binds the otherwise-unused DFU interface,
+it sends normal endpoint-zero control requests only and contains no DFU or
+firmware-update implementation.
 
 See [docs/reverse-engineering.md](docs/reverse-engineering.md) for evidence,
 known control IDs, and remaining work.
