@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QCloseEvent, QPaintEvent, QPainter
 from PySide6.QtWidgets import (
     QDial,
@@ -344,13 +344,26 @@ class MixerStrip(QFrame):
                 self._controller.read_mix_level(self.spec.sources[0], destination),
                 self._controller.read_mix_level(self.spec.sources[1], destination + 1),
             )
-        value = round(sum(levels) / len(levels))
+        if len(self.spec.sources) == 1:
+            value = round(max(levels))
+            if value <= -128:
+                pan = 0
+            else:
+                pan = round((levels[1] - levels[0]) / 1.28)
+                pan = max(-100, min(100, pan))
+        else:
+            value = round(sum(levels) / len(levels))
+            pan = 0
         self.fader.blockSignals(True)
+        self.pan.blockSignals(True)
         try:
             self.fader.setValue(max(-128, min(6, value)))
             self._show_level(value)
+            self.pan.setValue(pan)
+            self._show_pan(pan)
         finally:
             self.fader.blockSignals(False)
+            self.pan.blockSignals(False)
 
     def write_effective_level(self, any_solo: bool) -> None:
         suppressed = self.mute.isChecked() or (any_solo and not self.solo.isChecked())
@@ -538,10 +551,12 @@ class MainWindow(QMainWindow):
         *,
         connected: bool,
         status_text: str,
+        settings: QSettings | None = None,
     ) -> None:
         super().__init__()
         self.controller = controller
         self.connected = connected
+        self.settings = settings
         self.setWindowTitle("EVO")
         self.resize(1500, 850)
         self.setMinimumSize(980, 680)
@@ -553,6 +568,7 @@ class MainWindow(QMainWindow):
         self.mix_levels: dict[tuple[int, int], QWidget] = {}
         self._sync_failures = 0
         self._meter_reader: AudioMeterReader | None = None
+        self._loading_settings = False
         self.sync_timer = QTimer(self)
         self.sync_timer.setInterval(200)
         self.sync_timer.timeout.connect(self._sync_hardware_state)
@@ -639,6 +655,8 @@ class MainWindow(QMainWindow):
     def _show_preamp_controls(self, visible: bool) -> None:
         for strip in self.input_strips:
             strip.set_preamp_visible(visible)
+        if self.settings is not None and not self._loading_settings:
+            self.settings.setValue("ui/show_preamp", visible)
 
     def _enable_artist_mix(self, enabled: bool) -> None:
         self.artist_enabled = enabled
@@ -646,6 +664,8 @@ class MainWindow(QMainWindow):
             self.select_mix(0)
         self.master.artist_choice.setEnabled(enabled)
         self.message.setText("Artist Mix enabled" if enabled else "Artist Mix disabled")
+        if self.settings is not None and not self._loading_settings:
+            self.settings.setValue("ui/artist_enabled", enabled)
 
     def select_mix(self, pair: int) -> None:
         if pair == 1 and not self.artist_enabled:
@@ -653,6 +673,8 @@ class MainWindow(QMainWindow):
             self.master.artist_choice.setChecked(False)
             self.message.setText("Enable Artist Mix from Setup first")
             return
+        if not self._loading_settings:
+            self._save_mix_state(self.active_pair)
         self.active_pair = pair
         artist = pair == 1
         for strip in self.input_strips:
@@ -660,6 +682,9 @@ class MainWindow(QMainWindow):
         self.master.set_mix(pair, artist)
         if self.connected:
             self._load_selected_mix()
+        self._restore_mix_state(pair)
+        if self.settings is not None and not self._loading_settings:
+            self.settings.setValue("ui/active_pair", pair)
 
     def load_state(self) -> None:
         try:
@@ -675,6 +700,39 @@ class MainWindow(QMainWindow):
         else:
             self.message.setText("EVO 8 connected · hardware state loaded")
             self.message.setStyleSheet(f"color: {COLORS['main']};")
+
+    def load_preferences(self) -> None:
+        """Restore local mixer semantics and send saved mixes to the EVO."""
+        if self.settings is None:
+            return
+        self._loading_settings = True
+        try:
+            geometry = self.settings.value("ui/geometry")
+            if geometry is not None:
+                self.restoreGeometry(geometry)
+            self.preamp_action.setChecked(
+                self.settings.value("ui/show_preamp", False, type=bool)
+            )
+            self.artist_action.setChecked(
+                self.settings.value("ui/artist_enabled", False, type=bool)
+            )
+            pair = self.settings.value("ui/active_pair", 0, type=int)
+            if pair not in (0, 1) or (pair == 1 and not self.artist_enabled):
+                pair = 0
+            self.select_mix(pair)
+        finally:
+            self._loading_settings = False
+
+        if self.connected:
+            try:
+                restored = self._apply_saved_mixes()
+            except Exception as error:
+                self.message.setText(f"Saved mixer restore failed: {error}")
+                self.message.setStyleSheet(f"color: {COLORS['danger']};")
+            else:
+                if restored:
+                    self.message.setText("Previous mixer settings restored to EVO 8")
+                    self.message.setStyleSheet(f"color: {COLORS['main']};")
 
     def start_hardware_sync(self) -> None:
         """Keep controls in step with changes made on the EVO 8 itself."""
@@ -710,6 +768,7 @@ class MainWindow(QMainWindow):
         self.meter_message.setText(self._meter_reader.status)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._save_preferences()
         self.sync_timer.stop()
         self.meter_timer.stop()
         if self._meter_reader is not None:
@@ -753,6 +812,118 @@ class MainWindow(QMainWindow):
             strip.load_mix_level()
         self.master.apply_state(self.controller.read_output(self.active_pair * 2))
 
+    def _mix_key(self, pair: int, strip: int, field: str) -> str:
+        return f"mix/{pair}/strip/{strip}/{field}"
+
+    def _save_mix_state(self, pair: int) -> None:
+        if self.settings is None or self._loading_settings:
+            return
+        for index, strip in enumerate(self.input_strips):
+            self.settings.setValue(self._mix_key(pair, index, "fader"), strip.fader.value())
+            self.settings.setValue(self._mix_key(pair, index, "pan"), strip.pan.value())
+            self.settings.setValue(self._mix_key(pair, index, "mute"), strip.mute.isChecked())
+            self.settings.setValue(self._mix_key(pair, index, "solo"), strip.solo.isChecked())
+
+    def _restore_mix_state(self, pair: int) -> bool:
+        if self.settings is None:
+            return False
+        restored = False
+        for index, strip in enumerate(self.input_strips):
+            fader_key = self._mix_key(pair, index, "fader")
+            if not self.settings.contains(fader_key):
+                continue
+            restored = True
+            for widget in (strip.fader, strip.pan, strip.mute, strip.solo):
+                widget.blockSignals(True)
+            try:
+                fader = self.settings.value(fader_key, 0, type=int)
+                pan = self.settings.value(
+                    self._mix_key(pair, index, "pan"), 0, type=int
+                )
+                strip.fader.setValue(max(-128, min(6, fader)))
+                strip._show_level(strip.fader.value())
+                strip.pan.setValue(max(-100, min(100, pan)))
+                strip._show_pan(strip.pan.value())
+                strip.mute.setChecked(
+                    self.settings.value(
+                        self._mix_key(pair, index, "mute"), False, type=bool
+                    )
+                )
+                strip.solo.setChecked(
+                    self.settings.value(
+                        self._mix_key(pair, index, "solo"), False, type=bool
+                    )
+                )
+            finally:
+                for widget in (strip.fader, strip.pan, strip.mute, strip.solo):
+                    widget.blockSignals(False)
+        return restored
+
+    def _apply_saved_mixes(self) -> bool:
+        if self.settings is None:
+            return False
+        restored = False
+        for pair in (0, 1):
+            states: list[tuple[int, int, bool, bool] | None] = []
+            for index in range(len(self.input_strips)):
+                fader_key = self._mix_key(pair, index, "fader")
+                if not self.settings.contains(fader_key):
+                    states.append(None)
+                    continue
+                restored = True
+                states.append(
+                    (
+                        self.settings.value(fader_key, 0, type=int),
+                        self.settings.value(
+                            self._mix_key(pair, index, "pan"), 0, type=int
+                        ),
+                        self.settings.value(
+                            self._mix_key(pair, index, "mute"), False, type=bool
+                        ),
+                        self.settings.value(
+                            self._mix_key(pair, index, "solo"), False, type=bool
+                        ),
+                    )
+                )
+            any_solo = any(state is not None and state[3] for state in states)
+            destination = pair * 2
+            for strip, state in zip(self.input_strips, states, strict=True):
+                if state is None:
+                    continue
+                level, pan, muted, solo = state
+                effective = -128 if muted or (any_solo and not solo) else level
+                left = effective
+                right = effective
+                if len(strip.spec.sources) == 1 and effective > -128:
+                    if pan < 0:
+                        right = max(-128, round(effective - abs(pan) * 1.28))
+                    elif pan > 0:
+                        left = max(-128, round(effective - pan * 1.28))
+                if len(strip.spec.sources) == 1:
+                    self.controller.set_mix_level(strip.spec.sources[0], destination, left)
+                    self.controller.set_mix_level(
+                        strip.spec.sources[0], destination + 1, right
+                    )
+                else:
+                    self.controller.set_mix_level(
+                        strip.spec.sources[0], destination, effective
+                    )
+                    self.controller.set_mix_level(
+                        strip.spec.sources[1], destination + 1, effective
+                    )
+        return restored
+
+    def _save_preferences(self) -> None:
+        if self.settings is None:
+            return
+        self._save_mix_state(self.active_pair)
+        self.settings.setValue("state/version", 1)
+        self.settings.setValue("ui/geometry", self.saveGeometry())
+        self.settings.setValue("ui/show_preamp", self.preamp_action.isChecked())
+        self.settings.setValue("ui/artist_enabled", self.artist_action.isChecked())
+        self.settings.setValue("ui/active_pair", self.active_pair)
+        self.settings.sync()
+
     def _apply_solo(self) -> None:
         any_solo = any(strip.solo.isChecked() for strip in self.input_strips)
 
@@ -761,6 +932,7 @@ class MainWindow(QMainWindow):
                 strip.write_effective_level(any_solo)
 
         self.invoke(operation)
+        self._save_mix_state(self.active_pair)
 
     def invoke(self, operation: Callable[[], None]) -> None:
         try:

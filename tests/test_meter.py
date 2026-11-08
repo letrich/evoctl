@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from array import array
+from pathlib import Path
+import struct
+import tempfile
 import unittest
 
-from evoctl.meter import SILENCE_DB, find_evo_sources, peak_db
+from evoctl.meter import (
+    SILENCE_DB,
+    extract_iso_payload,
+    find_evo_sources,
+    find_evo_usb_device,
+    peak_db,
+    s32le_peak_db,
+)
 
 
 class MeterTests(unittest.TestCase):
@@ -27,6 +37,34 @@ class MeterTests(unittest.TestCase):
                 "alsa_output.usb-Audient_EVO8-00.pro-output-0.monitor",
             ),
         )
+
+    def test_s32le_peak_db(self) -> None:
+        payload = struct.pack("<iiii", 2**30, -(2**29), 0, 2**30)
+        levels = s32le_peak_db(payload, 2)
+        self.assertAlmostEqual(levels[0], -6.0206, places=3)
+        self.assertAlmostEqual(levels[1], -6.0206, places=3)
+
+    def test_sparse_iso_payload_is_compacted(self) -> None:
+        descriptors = b"".join(
+            (
+                struct.pack("<iIII", 0, 0, 4, 0),
+                struct.pack("<iIII", 0, 8, 4, 0),
+            )
+        )
+        self.assertEqual(
+            extract_iso_payload(descriptors + b"abcd----efgh", 2),
+            b"abcdefgh",
+        )
+
+    def test_evo_usb_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            device = Path(directory) / "3-2"
+            device.mkdir()
+            (device / "idVendor").write_text("2708\n")
+            (device / "idProduct").write_text("0007\n")
+            (device / "busnum").write_text("3\n")
+            (device / "devnum").write_text("17\n")
+            self.assertEqual(find_evo_usb_device(Path(directory)), (3, 17))
 
 
 if __name__ == "__main__":

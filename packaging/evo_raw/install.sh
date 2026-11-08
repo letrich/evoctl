@@ -38,12 +38,26 @@ fi
 
 install -Dm0644 "$script_dir/../udev/60-evoctl.rules" \
     /etc/udev/rules.d/60-evoctl.rules
+install -Dm0755 "$script_dir/../udev/evoctl-usbmon-access" \
+    /usr/local/libexec/evoctl-usbmon-access
 install -Dm0644 /dev/null /etc/modules-load.d/evo_raw.conf
 printf '%s\n' "$module_name" > /etc/modules-load.d/evo_raw.conf
+install -Dm0644 /dev/null /etc/modules-load.d/evoctl-usbmon.conf
+printf '%s\n' usbmon > /etc/modules-load.d/evoctl-usbmon.conf
 
 udevadm control --reload-rules
 modprobe "$module_name"
+modprobe usbmon
 udevadm trigger --subsystem-match=misc --sysname-match=evo8
+
+for device_path in /sys/bus/usb/devices/*; do
+    if [ -f "$device_path/idVendor" ] && [ -f "$device_path/idProduct" ] && \
+       [ "$(cat "$device_path/idVendor")" = 2708 ] && \
+       [ "$(cat "$device_path/idProduct")" = 0007 ]; then
+        /usr/local/libexec/evoctl-usbmon-access "$(cat "$device_path/busnum")"
+    fi
+done
 
 echo "Installed $module_name. The EVO 8 remains available to ALSA and DAWs."
 echo "Control device: /dev/evo8"
+echo "Direct-ALSA meters: read-only access enabled for the EVO USB bus monitor."

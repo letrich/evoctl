@@ -22,7 +22,7 @@ On Ubuntu or Debian, install the GUI binding and kernel-module build tools:
 ```sh
 sudo apt update
 sudo apt install python3-pyside6.qtwidgets build-essential \
-  linux-headers-$(uname -r) dkms pulseaudio-utils
+  linux-headers-$(uname -r) dkms
 ```
 
 DKMS is strongly recommended because it automatically rebuilds the helper
@@ -35,10 +35,10 @@ Verify the GUI binding:
 python3 -c 'from PySide6.QtWidgets import QApplication; print("PySide6 QtWidgets: OK")'
 ```
 
-No third-party Python USB package is required.
-`pulseaudio-utils` supplies `pactl` and `parec`; on a normal PipeWire desktop
-these commands talk to PipeWire's Pulse-compatible service and do not install
-or start a second audio server.
+No third-party Python USB or audio package is required. If `pactl` and `parec`
+are already installed, evoctl can also use PipeWire/Pulse as an automatic
+meter fallback, but direct ALSA is fully supported and remains the preferred
+low-latency DAW path.
 
 ## Install concurrent device control
 
@@ -50,6 +50,15 @@ reconnect. evoctl therefore does not detach it.
 Instead, the included `evo_raw` helper binds only the otherwise-unused DFU
 interface 3 and exposes `/dev/evo8`. AudioControl and both streaming interfaces
 remain continuously owned by `snd-usb-audio`.
+
+The installer also loads the kernel's standard `usbmon` module and grants the
+`dialout` group read-only access to the monitor for the USB bus where the EVO 8
+is connected. evoctl filters that passive stream to the EVO's current device
+address and audio endpoints, calculates peaks in memory, and stores no audio.
+It does not open a PCM, so REAPER can continue to own direct ALSA capture and
+playback exclusively. Access to a bus monitor can expose traffic from other USB
+devices on the same bus; the rule deliberately grants only the EVO's bus, not
+`usbmon0` or every USB bus.
 
 Build, install, and load the helper with:
 
@@ -68,6 +77,7 @@ Confirm that both the safe control device and normal ALSA device exist:
 
 ```sh
 ls -l /dev/evo8
+ls -l /dev/usbmon*
 aplay -l | grep -A2 EVO8
 PYTHONPATH=src python3 - <<'PY'
 from evoctl.kernel import EvoKernelTransport
@@ -89,11 +99,13 @@ From the repository root:
 PYTHONPATH=src python3 -m evoctl --demo
 ```
 
-Omit `--demo` to open `/dev/evo8`. Hardware writes happen only after an explicit
-UI change. On startup, the UI reads the current input, output, and mixer state
-without taking the interface away from the DAW. While it is open, the app reads
-the input and selected-output controls five times per second, so changes made
-with the EVO 8 buttons and encoder appear in the UI without reopening it.
+Omit `--demo` to open `/dev/evo8`. On first use, hardware writes happen only
+after an explicit UI change. Once local mixer state has been saved, it is sent
+back to the EVO matrix at startup, matching the official application's restore
+behavior. The UI reads current input and output state without taking the
+interface away from the DAW. While it is open, the app reads the input and
+selected-output controls five times per second, so changes made with the EVO 8
+buttons and encoder appear in the UI without reopening it.
 
 The main window follows the official EVO Mixer workflow instead of presenting
 the 10×4 hardware matrix directly:
@@ -107,20 +119,19 @@ the 10×4 hardware matrix directly:
 
 Mixer faders and pan controls are backed by the EVO 8 mixer-unit crosspoints;
 the matrix is an implementation detail and is not shown as a separate routing
-page. Signal meters read the EVO 8 capture and playback-monitor nodes from the
-shared PipeWire graph. They never open an ALSA hardware PCM and therefore do
-not take the interface away from the DAW.
+page. Signal meters passively observe the EVO 8 USB audio packets through the
+read-only bus monitor. Direct ALSA remains exclusively owned by the DAW; the
+control panel neither opens nor duplicates its PCM streams. The playback meters
+reflect audio sent from the DAW to the EVO. Direct-monitor audio mixed only
+inside the hardware is not present in that playback stream.
 
-For simultaneous DAW audio and meters, select the DAW's **JACK** audio system
-(provided by PipeWire-JACK on current Linux desktops), or another PipeWire
-backend. If the DAW opens `hw:EVO8` through direct ALSA, that stream is
-exclusive: device controls and physical-encoder readback still work, but the
-control panel reports that no shared meter stream is available. The playback
-meters reflect audio entering the EVO from the shared graph; direct-monitor
-audio mixed inside the hardware is not observable through that graph.
-
-Demo mode keeps an in-memory device state, so control values persist when
-switching between Master Mix and Artist Mix.
+evoctl automatically stores application-level mixer state in
+`~/.config/evoctl/evoctl.conf`. On the next start it restores the selected mix,
+Artist Mix and preamp-view state, faders, pan, mute, and solo, and sends saved
+mixer levels back to the EVO matrix. Preamp gain, 48 V, instrument mode, output
+volume, and output mute are read from the device instead, so physical controls
+remain authoritative. Demo mode uses the same local application settings and
+also keeps an in-memory device state while it is running.
 
 ## Tests
 

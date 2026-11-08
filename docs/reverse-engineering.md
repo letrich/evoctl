@@ -204,11 +204,29 @@ live control-selector scans did not establish a dedicated EVO USB control for
 these rapidly changing values; the meter path is distinct from gain, mute, and
 mix-level control readback.
 
-On Linux, evoctl therefore obtains level data from the EVO capture and
-playback-monitor nodes in the shared PipeWire graph. This does not claim a USB
-interface or an ALSA PCM. Direct ALSA hardware streams remain usable for audio
-and USB controls, but their samples are intentionally not intercepted, so
-meters require the DAW to use JACK/PipeWire.
+On Linux, evoctl first obtains level data by passively observing the EVO's
+already-active isochronous URBs through the kernel usbmon binary ABI. It filters
+the selected bus to the current EVO device address, playback endpoint `0x01`
+submissions, and capture endpoint `0x82` completions. It does not claim a USB
+interface or open an ALSA PCM, so direct ALSA remains exclusively owned by the
+DAW. PipeWire/Pulse capture remains an optional fallback when usbmon is not
+available. The usbmon ABI and its security boundary are documented by the
+Linux kernel: <https://docs.kernel.org/usb/usbmon.html>.
+
+### Settings ownership and startup restore
+
+The official application contains EVO 8-specific settings serialiser and
+deserialiser classes as well as preset import/export UI. Its window-opening
+path explicitly warns that the software mixer will load previous settings and
+override the hardware monitor-mix value. Static evidence:
+`ev_eaea66ddfd3a1ab1ad8030f709011baa4085a9ef523d4b16b4cecf38612c0774`
+and `ev_a255038d6e494dc7e8b43c64282f39acf07091510ad81fdf99e2f0b1815d5d6d`.
+
+evoctl mirrors that boundary. Raw input/output controls are read from the
+device, while mixer workflow state is stored locally and restored to the EVO
+mixer crosspoints on startup. This is necessary because mute and solo are
+application semantics represented by temporary crosspoint attenuation; the
+underlying fader value cannot be reconstructed from a muted crosspoint alone.
 
 ## Internal classes observed in the Windows application
 

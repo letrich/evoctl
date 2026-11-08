@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from .controller import Evo8Controller
@@ -72,9 +73,17 @@ def main(argv: list[str] | None = None) -> int:
             status = "EVO 8 CONNECTED"
             app.aboutToQuit.connect(device.close)
 
-    window = MainWindow(Evo8Controller(transport), connected=connected, status_text=status)
+    window = MainWindow(
+        Evo8Controller(transport),
+        connected=connected,
+        status_text=status,
+        settings=QSettings(),
+    )
     if connected and not args.demo:
         window.load_state()
+    if connected:
+        window.load_preferences()
+    if connected and not args.demo:
         window.start_hardware_sync()
         window.start_audio_meters()
     window.show()

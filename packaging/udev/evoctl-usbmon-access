@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+bus=${1-}
+case "$bus" in
+    ''|*[!0-9]*) exit 1 ;;
+esac
+
+while [ "${bus#0}" != "$bus" ]; do
+    bus=${bus#0}
+done
+[ -n "$bus" ] || bus=0
+
+monitor=/dev/usbmon${bus}
+[ -c "$monitor" ] || exit 0
+if command -v setfacl >/dev/null 2>&1; then
+    setfacl -m g:dialout:r "$monitor"
+else
+    chgrp dialout "$monitor"
+    chmod g+r "$monitor"
+fi

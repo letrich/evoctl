@@ -1,2 +1,6 @@
 # evo_raw creates this device without taking any snd-usb-audio interface.
 KERNEL=="evo8", SUBSYSTEM=="misc", GROUP="dialout", MODE="0660", TAG+="uaccess"
+
+# Give dialout read-only access to the monitor for the USB bus containing EVO 8.
+# The app filters this stream to the EVO's current device address and audio endpoints.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2708", ATTR{idProduct}=="0007", RUN+="/usr/local/libexec/evoctl-usbmon-access $env{BUSNUM}"
