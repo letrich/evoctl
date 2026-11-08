@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QCloseEvent, QPaintEvent, QPainter
 from PySide6.QtWidgets import (
     QDial,
@@ -22,6 +22,12 @@ from PySide6.QtWidgets import (
 
 from .controller import Evo8Controller, InputState, OutputState
 from .meter import AudioMeterReader, SILENCE_DB, apply_gain_db, combine_peaks_db
+from .mixer import (
+    FADER_STEPS,
+    channel_gains,
+    nearest_fader_index,
+    reconstruct_level_and_pan,
+)
 
 
 COLORS = {
@@ -191,6 +197,25 @@ class LevelMeter(QWidget):
         painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
 
 
+class ScaledFader(QSlider):
+    """QSlider with the official EVO audio-taper values as its public value."""
+
+    db_value_changed = Signal(float)
+
+    def __init__(self) -> None:
+        super().__init__(Qt.Orientation.Vertical)
+        super().setRange(0, len(FADER_STEPS) - 1)
+        super().valueChanged.connect(
+            lambda _position: self.db_value_changed.emit(self.value())
+        )
+
+    def value(self) -> float:
+        return FADER_STEPS[super().value()]
+
+    def setValue(self, value_db: float) -> None:
+        super().setValue(nearest_fader_index(float(value_db)))
+
+
 class MixerStrip(QFrame):
     def __init__(
         self,
@@ -222,19 +247,33 @@ class MixerStrip(QFrame):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
-        self.pan = QDial()
-        self.pan.setRange(-100, 100)
-        self.pan.setValue(0)
-        self.pan.setNotchesVisible(False)
-        self.pan.setFixedSize(72, 72)
-        self.pan.valueChanged.connect(self._show_pan)
-        self.pan.sliderReleased.connect(self._write_level)
-        layout.addWidget(self.pan, 0, Qt.AlignmentFlag.AlignHCenter)
-
-        self.pan_label = QLabel("C")
-        self.pan_label.setObjectName("small")
-        self.pan_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.pan_label)
+        pan_row = QHBoxLayout()
+        pan_row.setSpacing(4)
+        self.pans: list[QDial] = []
+        self.pan_labels: list[QLabel] = []
+        initial_pans = (0,) if len(spec.sources) == 1 else (-100, 100)
+        for index, initial in enumerate(initial_pans):
+            pan_column = QVBoxLayout()
+            pan = QDial()
+            pan.setRange(-100, 100)
+            pan.setValue(initial)
+            pan.setNotchesVisible(False)
+            pan_size = 64 if len(initial_pans) > 1 else 72
+            pan.setFixedSize(pan_size, pan_size)
+            pan.valueChanged.connect(
+                lambda value, pan_index=index: self._show_pan(pan_index, value)
+            )
+            pan.sliderReleased.connect(self._write_level)
+            pan_column.addWidget(pan, 0, Qt.AlignmentFlag.AlignHCenter)
+            label = QLabel()
+            label.setObjectName("small")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            pan_column.addWidget(label)
+            pan_row.addLayout(pan_column)
+            self.pans.append(pan)
+            self.pan_labels.append(label)
+            self._show_pan(index, initial)
+        layout.addLayout(pan_row)
 
         self.link = QPushButton("MONO" if len(spec.sources) == 1 else "STEREO")
         self.link.setCheckable(spec.input_channel is not None)
@@ -258,11 +297,10 @@ class MixerStrip(QFrame):
         fader_row.setSpacing(7)
         self.meter = LevelMeter(len(spec.sources))
         fader_row.addWidget(self.meter)
-        self.fader = QSlider(Qt.Orientation.Vertical)
-        self.fader.setRange(-128, 6)
+        self.fader = ScaledFader()
         self.fader.setValue(0)
         self.fader.setMinimumHeight(270)
-        self.fader.valueChanged.connect(self._show_level)
+        self.fader.db_value_changed.connect(self._show_level)
         self.fader.sliderReleased.connect(self._write_level)
         fader_row.addWidget(self.fader, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addLayout(fader_row, 1)
@@ -317,6 +355,19 @@ class MixerStrip(QFrame):
         self.accent.style().unpolish(self.accent)
         self.accent.style().polish(self.accent)
 
+    def set_pan_values(self, values: tuple[int, ...]) -> None:
+        for index, pan in enumerate(self.pans):
+            value = (
+                values[index]
+                if index < len(values)
+                else (-100 if index == 0 else 100)
+            )
+            pan.setValue(max(-100, min(100, value)))
+            self._show_pan(index, pan.value())
+
+    def route_gains(self, level: float) -> tuple[tuple[float, float], ...]:
+        return tuple(channel_gains(level, pan.value()) for pan in self.pans)
+
     def apply_input_state(self, state: InputState) -> None:
         for widget in (self.gain, self.phantom, self.instrument, self.link):
             widget.blockSignals(True)
@@ -334,66 +385,47 @@ class MixerStrip(QFrame):
 
     def load_mix_level(self) -> None:
         destination = self._output_pair * 2
-        if len(self.spec.sources) == 1:
-            levels = (
-                self._controller.read_mix_level(self.spec.sources[0], destination),
-                self._controller.read_mix_level(self.spec.sources[0], destination + 1),
+        states = tuple(
+            reconstruct_level_and_pan(
+                self._controller.read_mix_level(source, destination),
+                self._controller.read_mix_level(source, destination + 1),
             )
-        else:
-            levels = (
-                self._controller.read_mix_level(self.spec.sources[0], destination),
-                self._controller.read_mix_level(self.spec.sources[1], destination + 1),
-            )
-        if len(self.spec.sources) == 1:
-            value = round(max(levels))
-            if value <= -128:
-                pan = 0
-            else:
-                pan = round((levels[1] - levels[0]) / 1.28)
-                pan = max(-100, min(100, pan))
-        else:
-            value = round(sum(levels) / len(levels))
-            pan = 0
+            for source in self.spec.sources
+        )
+        value = sum(state[0] for state in states) / len(states)
+        pan_values = tuple(state[1] for state in states)
         self.fader.blockSignals(True)
-        self.pan.blockSignals(True)
+        for pan in self.pans:
+            pan.blockSignals(True)
         try:
-            self.fader.setValue(max(-128, min(6, value)))
-            self._show_level(value)
-            self.pan.setValue(pan)
-            self._show_pan(pan)
+            self.fader.setValue(value)
+            self._show_level(self.fader.value())
+            self.set_pan_values(pan_values)
         finally:
             self.fader.blockSignals(False)
-            self.pan.blockSignals(False)
+            for pan in self.pans:
+                pan.blockSignals(False)
 
     def write_effective_level(self, any_solo: bool) -> None:
         suppressed = self.mute.isChecked() or (any_solo and not self.solo.isChecked())
-        level = -128 if suppressed else self.fader.value()
-        pan = self.pan.value()
-        left = level
-        right = level
-        if len(self.spec.sources) == 1 and level > -128:
-            if pan < 0:
-                right = max(-128, round(level - abs(pan) * 1.28))
-            elif pan > 0:
-                left = max(-128, round(level - pan * 1.28))
+        level = SILENCE_DB if suppressed else self.fader.value()
         destination = self._output_pair * 2
-        if len(self.spec.sources) == 1:
-            self._controller.set_mix_level(self.spec.sources[0], destination, left)
-            self._controller.set_mix_level(self.spec.sources[0], destination + 1, right)
-        else:
-            self._controller.set_mix_level(self.spec.sources[0], destination, level)
-            self._controller.set_mix_level(self.spec.sources[1], destination + 1, level)
+        for source, (left, right) in zip(
+            self.spec.sources, self.route_gains(level), strict=True
+        ):
+            self._controller.set_mix_level(source, destination, left)
+            self._controller.set_mix_level(source, destination + 1, right)
 
     def _write_level(self) -> None:
         self._solo_changed()
 
-    def _show_pan(self, value: int) -> None:
-        self.pan_label.setText(
-            "C" if value == 0 else f"L {abs(value)}" if value < 0 else f"R {value}"
-        )
+    def _show_pan(self, index: int, value: int) -> None:
+        label = "C" if value == 0 else f"L {abs(value)}" if value < 0 else f"R {value}"
+        prefix = ("LEFT  ", "RIGHT  ")[index] if len(self.spec.sources) > 1 else ""
+        self.pan_labels[index].setText(prefix + label)
 
-    def _show_level(self, value: int) -> None:
-        self.level_label.setText("−∞" if value <= -128 else f"{value} dB")
+    def _show_level(self, value: float) -> None:
+        self.level_label.setText("−∞" if value <= -128 else f"{value:g} dB")
 
     def _show_gain(self, value: int) -> None:
         self.gain_label.setText(f"GAIN  {value} dB")
@@ -767,23 +799,14 @@ class MainWindow(QMainWindow):
             suppressed = strip.mute.isChecked() or (
                 any_solo and not strip.solo.isChecked()
             )
-            gain = -128 if suppressed else strip.fader.value()
-            strip.meter.set_levels(
-                tuple(apply_gain_db(level, gain) for level in levels)
-            )
+            gain = SILENCE_DB if suppressed else strip.fader.value()
+            route_gains = strip.route_gains(gain)
 
             if len(levels) == 1:
-                left_gain = gain
-                right_gain = gain
-                if gain > -128:
-                    if strip.pan.value() < 0:
-                        right_gain = max(
-                            -128, round(gain - abs(strip.pan.value()) * 1.28)
-                        )
-                    elif strip.pan.value() > 0:
-                        left_gain = max(
-                            -128, round(gain - strip.pan.value() * 1.28)
-                        )
+                left_gain, right_gain = route_gains[0]
+                strip.meter.set_levels(
+                    (apply_gain_db(levels[0], max(left_gain, right_gain)),)
+                )
                 output_contributions[0].append(
                     apply_gain_db(levels[0], left_gain)
                 )
@@ -791,8 +814,21 @@ class MainWindow(QMainWindow):
                     apply_gain_db(levels[0], right_gain)
                 )
             else:
-                output_contributions[0].append(apply_gain_db(levels[0], gain))
-                output_contributions[1].append(apply_gain_db(levels[1], gain))
+                left_level = combine_peaks_db(
+                    [
+                        apply_gain_db(level, gains[0])
+                        for level, gains in zip(levels, route_gains, strict=True)
+                    ]
+                )
+                right_level = combine_peaks_db(
+                    [
+                        apply_gain_db(level, gains[1])
+                        for level, gains in zip(levels, route_gains, strict=True)
+                    ]
+                )
+                strip.meter.set_levels((left_level, right_level))
+                output_contributions[0].append(left_level)
+                output_contributions[1].append(right_level)
 
         master_gain = -128 if self.master.mute.isChecked() else self.master.volume.value()
         master_levels = tuple(
@@ -850,12 +886,40 @@ class MainWindow(QMainWindow):
     def _mix_key(self, pair: int, strip: int, field: str) -> str:
         return f"mix/{pair}/strip/{strip}/{field}"
 
+    def _saved_pan_values(
+        self, pair: int, index: int, strip: MixerStrip
+    ) -> tuple[int, ...]:
+        if len(strip.pans) == 1:
+            return (
+                self.settings.value(
+                    self._mix_key(pair, index, "pan"), 0, type=int
+                ),
+            )
+        return (
+            self.settings.value(
+                self._mix_key(pair, index, "pan_left"), -100, type=int
+            ),
+            self.settings.value(
+                self._mix_key(pair, index, "pan_right"), 100, type=int
+            ),
+        )
+
     def _save_mix_state(self, pair: int) -> None:
         if self.settings is None or self._loading_settings:
             return
         for index, strip in enumerate(self.input_strips):
             self.settings.setValue(self._mix_key(pair, index, "fader"), strip.fader.value())
-            self.settings.setValue(self._mix_key(pair, index, "pan"), strip.pan.value())
+            if len(strip.pans) == 1:
+                self.settings.setValue(
+                    self._mix_key(pair, index, "pan"), strip.pans[0].value()
+                )
+            else:
+                self.settings.setValue(
+                    self._mix_key(pair, index, "pan_left"), strip.pans[0].value()
+                )
+                self.settings.setValue(
+                    self._mix_key(pair, index, "pan_right"), strip.pans[1].value()
+                )
             self.settings.setValue(self._mix_key(pair, index, "mute"), strip.mute.isChecked())
             self.settings.setValue(self._mix_key(pair, index, "solo"), strip.solo.isChecked())
 
@@ -868,17 +932,14 @@ class MainWindow(QMainWindow):
             if not self.settings.contains(fader_key):
                 continue
             restored = True
-            for widget in (strip.fader, strip.pan, strip.mute, strip.solo):
+            widgets = (strip.fader, *strip.pans, strip.mute, strip.solo)
+            for widget in widgets:
                 widget.blockSignals(True)
             try:
-                fader = self.settings.value(fader_key, 0, type=int)
-                pan = self.settings.value(
-                    self._mix_key(pair, index, "pan"), 0, type=int
-                )
-                strip.fader.setValue(max(-128, min(6, fader)))
+                fader = self.settings.value(fader_key, 0.0, type=float)
+                strip.fader.setValue(fader)
                 strip._show_level(strip.fader.value())
-                strip.pan.setValue(max(-100, min(100, pan)))
-                strip._show_pan(strip.pan.value())
+                strip.set_pan_values(self._saved_pan_values(pair, index, strip))
                 strip.mute.setChecked(
                     self.settings.value(
                         self._mix_key(pair, index, "mute"), False, type=bool
@@ -890,7 +951,7 @@ class MainWindow(QMainWindow):
                     )
                 )
             finally:
-                for widget in (strip.fader, strip.pan, strip.mute, strip.solo):
+                for widget in widgets:
                     widget.blockSignals(False)
         return restored
 
@@ -899,7 +960,7 @@ class MainWindow(QMainWindow):
             return False
         restored = False
         for pair in (0, 1):
-            states: list[tuple[int, int, bool, bool] | None] = []
+            states: list[tuple[float, tuple[int, ...], bool, bool] | None] = []
             for index in range(len(self.input_strips)):
                 fader_key = self._mix_key(pair, index, "fader")
                 if not self.settings.contains(fader_key):
@@ -908,9 +969,9 @@ class MainWindow(QMainWindow):
                 restored = True
                 states.append(
                     (
-                        self.settings.value(fader_key, 0, type=int),
-                        self.settings.value(
-                            self._mix_key(pair, index, "pan"), 0, type=int
+                        self.settings.value(fader_key, 0.0, type=float),
+                        self._saved_pan_values(
+                            pair, index, self.input_strips[index]
                         ),
                         self.settings.value(
                             self._mix_key(pair, index, "mute"), False, type=bool
@@ -925,27 +986,14 @@ class MainWindow(QMainWindow):
             for strip, state in zip(self.input_strips, states, strict=True):
                 if state is None:
                     continue
-                level, pan, muted, solo = state
-                effective = -128 if muted or (any_solo and not solo) else level
-                left = effective
-                right = effective
-                if len(strip.spec.sources) == 1 and effective > -128:
-                    if pan < 0:
-                        right = max(-128, round(effective - abs(pan) * 1.28))
-                    elif pan > 0:
-                        left = max(-128, round(effective - pan * 1.28))
-                if len(strip.spec.sources) == 1:
-                    self.controller.set_mix_level(strip.spec.sources[0], destination, left)
-                    self.controller.set_mix_level(
-                        strip.spec.sources[0], destination + 1, right
-                    )
-                else:
-                    self.controller.set_mix_level(
-                        strip.spec.sources[0], destination, effective
-                    )
-                    self.controller.set_mix_level(
-                        strip.spec.sources[1], destination + 1, effective
-                    )
+                level, pans, muted, solo = state
+                effective = (
+                    SILENCE_DB if muted or (any_solo and not solo) else level
+                )
+                for source, pan in zip(strip.spec.sources, pans, strict=True):
+                    left, right = channel_gains(effective, pan)
+                    self.controller.set_mix_level(source, destination, left)
+                    self.controller.set_mix_level(source, destination + 1, right)
         return restored
 
     def _save_preferences(self) -> None:

@@ -220,6 +220,27 @@ master value is exact for a single source and a power-sum estimate for multiple
 simultaneous sources; phase relationships and final internal DSP samples are
 not exposed by the device stream.
 
+### Official fader and pan behaviour
+
+EVO 4.4.0 constructs its channel fader with a device range of −128 to +6 dB,
+not +10 dB. The nearby `+10dB boost` text belongs to the input-gain boost
+button. `CustomScaledFader` maps its physical travel through a 179-value table:
+6 dB steps from −128 through −50, 1 dB steps to −40, 0.5 dB steps to −20,
+0.25 dB steps to −5, and 0.2 dB steps from −4.8 through +6. This is why a
+linear −128..+6 slider feels unlike the original. Static evidence:
+`ev_a9eb88e2aedb0a2431cd1b13d55f81860f94621d863cc1a8a37945fb87075d3d`
+and `ev_b830629ac9653fd0a33b658d5b08a74931d98c8cbc3db6e3bd53d26575f66ce`.
+
+The mixer model stores pan as 0..1 and converts it to two dB crosspoints. Its
+curve is built from `pow(10, -0.3)`, producing −6 dB on both sides at centre
+and silence on the opposite side at either extreme. A stereo channel component
+contains two channel pan controls but one linked fader, so evoctl exposes
+independent LEFT and RIGHT pans for paired DAW and loop-back strips and writes
+both destinations for both sources. Static evidence:
+`ev_01b13a6b268c0390de777e884458491208741d15c054a107f8214a66613abb08`,
+`ev_05646173a05d865ad5ed2ebf4132f799a5fd1d40e7666e203cbe68cbbcee2b2e`,
+and `ev_4f41d9d8f904695b87c605afb011f18052cb7a37f5d986a3bfe57ef624a4baac`.
+
 ### Settings ownership and startup restore
 
 The official application contains EVO 8-specific settings serialiser and

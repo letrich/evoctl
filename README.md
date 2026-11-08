@@ -119,18 +119,30 @@ the 10×4 hardware matrix directly:
 
 Mixer faders and pan controls are backed by the EVO 8 mixer-unit crosspoints;
 the matrix is an implementation detail and is not shown as a separate routing
-page. Signal meters passively observe the EVO 8 USB audio packets through the
+page. Mono strips have one pan control. As in the official mixer, paired stereo
+strips have independent `LEFT` and `RIGHT` pan controls (hard-left and
+hard-right by default) and one shared fader. All four stereo crosspoints are
+written, so either source can be placed anywhere in the selected output mix.
+
+The apparent fader range also follows the official application. The device
+range is −128 to +6 dB, but the slider uses the recovered 179-step audio taper
+instead of spacing that range linearly: it moves in 6 dB steps near silence,
+then becomes progressively finer, reaching 0.2 dB steps around unity. The pan
+law is the official −6 dB-centre curve rather than a linear dB approximation.
+
+Signal meters passively observe the EVO 8 USB audio packets through the
 read-only bus monitor. Direct ALSA remains exclusively owned by the DAW; the
 control panel neither opens nor duplicates its PCM streams. The playback meters
 reflect audio sent from the DAW to the EVO. Direct-monitor audio mixed only
 inside the hardware is not present in that playback stream.
 
 Channel meters are post-fader for the selected mix: fader, pan, mute, and solo
-all affect the indication. The master L/R meter combines the active source
-levels and then applies the selected output volume and mute. With one active
-source its dB movement is exact; with several simultaneous sources the master
-uses a power-sum estimate because the EVO does not expose its final internal
-DSP samples to the host.
+all affect the indication. A stereo strip's two meters show its panned L/R mix,
+including crossfeed when either channel is moved away from its default side.
+The master L/R meter combines the active source levels and then applies the
+selected output volume and mute. With one active source its dB movement is
+exact; with several simultaneous sources the master uses a power-sum estimate
+because the EVO does not expose its final internal DSP samples to the host.
 
 evoctl automatically stores application-level mixer state in
 `~/.config/evoctl/evoctl.conf`. On the next start it restores the selected mix,

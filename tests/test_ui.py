@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication
 from evoctl.__main__ import DemoTransport
 from evoctl.controller import Evo8Controller
 from evoctl.meter import MeterSnapshot, SILENCE_DB
+from evoctl.mixer import channel_gains
 from evoctl.ui import MainWindow
 
 
@@ -49,14 +50,52 @@ class UiReadbackTests(unittest.TestCase):
 
     def test_pan_is_reconstructed_from_device_crosspoints(self) -> None:
         controller = Evo8Controller(DemoTransport())
-        controller.set_mix_level(0, 0, -64)
-        controller.set_mix_level(0, 1, -32)
+        left, right = channel_gains(-32, 25)
+        controller.set_mix_level(0, 0, left)
+        controller.set_mix_level(0, 1, right)
         window = MainWindow(controller, connected=True, status_text="TEST")
 
         window.load_state()
 
         self.assertEqual(window.input_strips[0].fader.value(), -32)
-        self.assertEqual(window.input_strips[0].pan.value(), 25)
+        self.assertEqual(window.input_strips[0].pans[0].value(), 25)
+        window.close()
+
+    def test_stereo_pan_changes_both_channel_and_master_indication(self) -> None:
+        window = MainWindow(
+            Evo8Controller(DemoTransport()), connected=True, status_text="TEST"
+        )
+        window.input_strips[4].fader.setValue(-12)
+        window.input_strips[4].pans[1].setValue(100)
+        window._meter_reader = FixedMeterReader(
+            MeterSnapshot(
+                capture=(SILENCE_DB,) * 6,
+                playback=(SILENCE_DB, -14.0, SILENCE_DB, SILENCE_DB, SILENCE_DB, SILENCE_DB),
+                capture_seen=True,
+                playback_seen=True,
+            )
+        )
+
+        window._update_meters()
+
+        self.assertEqual(window.input_strips[4].meter._levels, [SILENCE_DB, -26.0])
+        self.assertEqual(window.master.meter._levels, [SILENCE_DB, -26.0])
+        window.close()
+
+    def test_stereo_pans_write_all_four_crosspoints(self) -> None:
+        controller = Evo8Controller(DemoTransport())
+        window = MainWindow(controller, connected=True, status_text="TEST")
+        strip = window.input_strips[4]
+        strip.fader.setValue(-12)
+        strip.pans[0].setValue(-100)
+        strip.pans[1].setValue(100)
+
+        strip.write_effective_level(False)
+
+        self.assertEqual(controller.read_mix_level(4, 0), -12)
+        self.assertEqual(controller.read_mix_level(4, 1), SILENCE_DB)
+        self.assertEqual(controller.read_mix_level(5, 0), SILENCE_DB)
+        self.assertEqual(controller.read_mix_level(5, 1), -12)
         window.close()
 
     def test_meters_follow_mix_fader_and_output_volume(self) -> None:
@@ -87,6 +126,8 @@ class UiReadbackTests(unittest.TestCase):
         window.artist_action.setChecked(True)
         window.select_mix(1)
         window.input_strips[4].fader.setValue(-10)
+        window.input_strips[4].pans[0].setValue(-100)
+        window.input_strips[4].pans[1].setValue(100)
         window.master.volume.setValue(0)
         window._meter_reader = FixedMeterReader(
             MeterSnapshot(
@@ -117,8 +158,11 @@ class UiReadbackTests(unittest.TestCase):
             first.preamp_action.setChecked(True)
             first.select_mix(1)
             first.input_strips[0].fader.setValue(-24)
-            first.input_strips[0].pan.setValue(50)
+            first.input_strips[0].pans[0].setValue(50)
             first.input_strips[0].mute.setChecked(True)
+            first.input_strips[4].fader.setValue(-10)
+            first.input_strips[4].pans[0].setValue(-50)
+            first.input_strips[4].pans[1].setValue(40)
             first.close()
 
             second_transport = DemoTransport()
@@ -135,8 +179,11 @@ class UiReadbackTests(unittest.TestCase):
             self.assertTrue(second.preamp_action.isChecked())
             self.assertEqual(second.active_pair, 1)
             self.assertEqual(second.input_strips[0].fader.value(), -24)
-            self.assertEqual(second.input_strips[0].pan.value(), 50)
+            self.assertEqual(second.input_strips[0].pans[0].value(), 50)
             self.assertTrue(second.input_strips[0].mute.isChecked())
+            self.assertEqual(second.input_strips[4].fader.value(), -10)
+            self.assertEqual(second.input_strips[4].pans[0].value(), -50)
+            self.assertEqual(second.input_strips[4].pans[1].value(), 40)
             self.assertEqual(
                 second.controller.read_mix_level(0, 2),
                 -128,
