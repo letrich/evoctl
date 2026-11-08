@@ -75,6 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     window = MainWindow(Evo8Controller(transport), connected=connected, status_text=status)
     if connected and not args.demo:
         window.load_state()
+        window.start_hardware_sync()
+        window.start_audio_meters()
     window.show()
     return app.exec()
 

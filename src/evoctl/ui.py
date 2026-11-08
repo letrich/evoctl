@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QColor, QCloseEvent, QPaintEvent, QPainter
 from PySide6.QtWidgets import (
     QDial,
     QFrame,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from .controller import Evo8Controller, InputState, OutputState
+from .meter import AudioMeterReader, SILENCE_DB
 
 
 COLORS = {
@@ -130,6 +131,66 @@ MIXER_CHANNELS = (
 )
 
 
+class LevelMeter(QWidget):
+    """Compact mono/stereo peak meter with a controlled visual decay."""
+
+    def __init__(self, channels: int, *, height: int = 270) -> None:
+        super().__init__()
+        self.channels = channels
+        self._levels = [SILENCE_DB] * channels
+        self.setFixedWidth(15 if channels == 1 else 28)
+        self.setMinimumHeight(height)
+
+    def set_levels(self, levels: tuple[float, ...]) -> None:
+        for channel in range(self.channels):
+            incoming = levels[channel] if channel < len(levels) else SILENCE_DB
+            self._levels[channel] = max(incoming, self._levels[channel] - 2.5)
+        self.update()
+
+    def paintEvent(self, _event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(COLORS["meter"]))
+        gap = 2
+        width = max(2, (self.width() - gap * (self.channels + 1)) // self.channels)
+        for channel, level in enumerate(self._levels):
+            left = gap + channel * (width + gap)
+            top = gap
+            height = max(1, self.height() - gap * 2)
+            painter.fillRect(left, top, width, height, QColor("#080808"))
+            proportion = max(0.0, min(1.0, (level + 60.0) / 60.0))
+            filled = round(height * proportion)
+            if not filled:
+                continue
+            green_height = min(filled, round(height * 0.8))
+            painter.fillRect(
+                left,
+                top + height - green_height,
+                width,
+                green_height,
+                QColor("#58c696"),
+            )
+            if filled > green_height:
+                yellow_height = min(filled - green_height, round(height * 0.15))
+                painter.fillRect(
+                    left,
+                    top + height - green_height - yellow_height,
+                    width,
+                    yellow_height,
+                    QColor("#e2b84f"),
+                )
+                red_height = filled - green_height - yellow_height
+                if red_height:
+                    painter.fillRect(
+                        left,
+                        top + height - filled,
+                        width,
+                        red_height,
+                        QColor(COLORS["danger"]),
+                    )
+        painter.setPen(QColor("#303030"))
+        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+
+
 class MixerStrip(QFrame):
     def __init__(
         self,
@@ -195,11 +256,7 @@ class MixerStrip(QFrame):
 
         fader_row = QHBoxLayout()
         fader_row.setSpacing(7)
-        self.meter = QFrame()
-        self.meter.setFixedWidth(15 if len(spec.sources) == 1 else 28)
-        self.meter.setStyleSheet(
-            f"background: {COLORS['meter']}; border: 1px solid #303030;"
-        )
+        self.meter = LevelMeter(len(spec.sources))
         fader_row.addWidget(self.meter)
         self.fader = QSlider(Qt.Orientation.Vertical)
         self.fader.setRange(-128, 6)
@@ -264,8 +321,9 @@ class MixerStrip(QFrame):
         for widget in (self.gain, self.phantom, self.instrument, self.link):
             widget.blockSignals(True)
         try:
-            self.gain.setValue(round(state.gain_db))
-            self._show_gain(round(state.gain_db))
+            if not self.gain.isSliderDown():
+                self.gain.setValue(round(state.gain_db))
+                self._show_gain(round(state.gain_db))
             self.phantom.setChecked(state.phantom_power)
             self.instrument.setChecked(state.instrument_mode)
             self.link.setChecked(state.stereo_linked)
@@ -427,13 +485,9 @@ class MasterSection(QFrame):
         meter_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         body.addWidget(meter_label)
         meters = QHBoxLayout()
-        for _ in range(2):
-            meter = QFrame()
-            meter.setFixedSize(22, 180)
-            meter.setStyleSheet(
-                f"background: {COLORS['meter']}; border: 1px solid #303030;"
-            )
-            meters.addWidget(meter)
+        self.meter = LevelMeter(2, height=180)
+        self.meter.setFixedWidth(48)
+        meters.addWidget(self.meter)
         body.addLayout(meters)
         layout.addLayout(body, 1)
 
@@ -457,8 +511,9 @@ class MasterSection(QFrame):
         self.volume.blockSignals(True)
         self.mute.blockSignals(True)
         try:
-            self.volume.setValue(round(state.volume_db))
-            self._show_volume(round(state.volume_db))
+            if not self.volume.isSliderDown():
+                self.volume.setValue(round(state.volume_db))
+                self._show_volume(round(state.volume_db))
             self.mute.setChecked(state.muted)
         finally:
             self.volume.blockSignals(False)
@@ -496,6 +551,14 @@ class MainWindow(QMainWindow):
         self.input_strips: list[MixerStrip] = []
         self.output_strips: list[MasterSection] = []
         self.mix_levels: dict[tuple[int, int], QWidget] = {}
+        self._sync_failures = 0
+        self._meter_reader: AudioMeterReader | None = None
+        self.sync_timer = QTimer(self)
+        self.sync_timer.setInterval(200)
+        self.sync_timer.timeout.connect(self._sync_hardware_state)
+        self.meter_timer = QTimer(self)
+        self.meter_timer.setInterval(33)
+        self.meter_timer.timeout.connect(self._update_meters)
         self._build_menus()
 
         root = QWidget()
@@ -528,13 +591,23 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.master)
         root_layout.addWidget(content, 1)
 
+        footer = QWidget()
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(0)
         self.message = QLabel(status_text)
         self.message.setObjectName("small")
         self.message.setContentsMargins(12, 5, 12, 5)
         self.message.setStyleSheet(
             f"color: {COLORS['main'] if connected else COLORS['danger']};"
         )
-        root_layout.addWidget(self.message)
+        footer_layout.addWidget(self.message, 1)
+        self.meter_message = QLabel("Meters stopped")
+        self.meter_message.setObjectName("small")
+        self.meter_message.setContentsMargins(12, 5, 12, 5)
+        self.meter_message.setAlignment(Qt.AlignmentFlag.AlignRight)
+        footer_layout.addWidget(self.meter_message)
+        root_layout.addWidget(footer)
         self.setCentralWidget(root)
 
     def _build_menus(self) -> None:
@@ -602,6 +675,78 @@ class MainWindow(QMainWindow):
         else:
             self.message.setText("EVO 8 connected · hardware state loaded")
             self.message.setStyleSheet(f"color: {COLORS['main']};")
+
+    def start_hardware_sync(self) -> None:
+        """Keep controls in step with changes made on the EVO 8 itself."""
+        if self.connected and not self.sync_timer.isActive():
+            self.sync_timer.start()
+
+    def start_audio_meters(self) -> None:
+        """Start graph-based meters without opening an ALSA device."""
+        if self._meter_reader is not None:
+            return
+        self._meter_reader = AudioMeterReader()
+        self._meter_reader.start()
+        self.meter_message.setText(self._meter_reader.status)
+        self.meter_timer.start()
+
+    def _update_meters(self) -> None:
+        if self._meter_reader is None:
+            return
+        snapshot = self._meter_reader.snapshot()
+        source_levels = (
+            (snapshot.capture[0],),
+            (snapshot.capture[1],),
+            (snapshot.capture[2],),
+            (snapshot.capture[3],),
+            snapshot.playback[0:2],
+            snapshot.playback[2:4],
+            snapshot.capture[4:6],
+        )
+        for strip, levels in zip(self.input_strips, source_levels, strict=True):
+            strip.meter.set_levels(levels)
+        pair = self.active_pair * 2
+        self.master.meter.set_levels(snapshot.playback[pair : pair + 2])
+        self.meter_message.setText(self._meter_reader.status)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.sync_timer.stop()
+        self.meter_timer.stop()
+        if self._meter_reader is not None:
+            self._meter_reader.stop()
+        super().closeEvent(event)
+
+    def _sync_hardware_state(self) -> None:
+        errors: list[Exception] = []
+        for strip in self.input_strips:
+            if strip.spec.input_channel is not None:
+                try:
+                    strip.apply_input_state(
+                        self.controller.read_input(strip.spec.input_channel)
+                    )
+                except Exception as error:
+                    errors.append(error)
+        try:
+            self.master.apply_state(
+                self.controller.read_output(self.active_pair * 2)
+            )
+        except Exception as error:
+            errors.append(error)
+
+        if errors:
+            self._sync_failures += 1
+            if self._sync_failures >= 3:
+                self.sync_timer.setInterval(2000)
+            self.message.setText(
+                f"Hardware synchronisation failed ({len(errors)} controls): {errors[0]}"
+            )
+            self.message.setStyleSheet(f"color: {COLORS['danger']};")
+        else:
+            if self._sync_failures:
+                self.message.setText("EVO 8 connected · hardware synchronisation restored")
+                self.message.setStyleSheet(f"color: {COLORS['main']};")
+            self._sync_failures = 0
+            self.sync_timer.setInterval(200)
 
     def _load_selected_mix(self) -> None:
         for strip in self.input_strips:

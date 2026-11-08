@@ -195,6 +195,21 @@ Setup menu, matching the official interaction model.
 
 Reference: <https://docs.audient.com/evo8/evo-mixer-configurations/>
 
+### Meter update path
+
+The official binary's `MeterUpdateService` periodically notifies input-channel
+models. Those models convert normalized mixer-node values to dB and deliver
+floating-point meter and clip events to the channel components. Static and
+live control-selector scans did not establish a dedicated EVO USB control for
+these rapidly changing values; the meter path is distinct from gain, mute, and
+mix-level control readback.
+
+On Linux, evoctl therefore obtains level data from the EVO capture and
+playback-monitor nodes in the shared PipeWire graph. This does not claim a USB
+interface or an ALSA PCM. Direct ALSA hardware streams remain usable for audio
+and USB controls, but their samples are intentionally not intercepted, so
+meters require the DAW to use JACK/PipeWire.
+
 ## Internal classes observed in the Windows application
 
 RTTI and decompilation identify dedicated classes for:

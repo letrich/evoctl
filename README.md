@@ -22,7 +22,7 @@ On Ubuntu or Debian, install the GUI binding and kernel-module build tools:
 ```sh
 sudo apt update
 sudo apt install python3-pyside6.qtwidgets build-essential \
-  linux-headers-$(uname -r) dkms
+  linux-headers-$(uname -r) dkms pulseaudio-utils
 ```
 
 DKMS is strongly recommended because it automatically rebuilds the helper
@@ -36,6 +36,9 @@ python3 -c 'from PySide6.QtWidgets import QApplication; print("PySide6 QtWidgets
 ```
 
 No third-party Python USB package is required.
+`pulseaudio-utils` supplies `pactl` and `parec`; on a normal PipeWire desktop
+these commands talk to PipeWire's Pulse-compatible service and do not install
+or start a second audio server.
 
 ## Install concurrent device control
 
@@ -88,7 +91,9 @@ PYTHONPATH=src python3 -m evoctl --demo
 
 Omit `--demo` to open `/dev/evo8`. Hardware writes happen only after an explicit
 UI change. On startup, the UI reads the current input, output, and mixer state
-without taking the interface away from the DAW.
+without taking the interface away from the DAW. While it is open, the app reads
+the input and selected-output controls five times per second, so changes made
+with the EVO 8 buttons and encoder appear in the UI without reopening it.
 
 The main window follows the official EVO Mixer workflow instead of presenting
 the 10×4 hardware matrix directly:
@@ -102,8 +107,18 @@ the 10×4 hardware matrix directly:
 
 Mixer faders and pan controls are backed by the EVO 8 mixer-unit crosspoints;
 the matrix is an implementation detail and is not shown as a separate routing
-page. Signal meters are visual placeholders until the device's live metering
-transport has been recovered, so they do not yet display audio levels.
+page. Signal meters read the EVO 8 capture and playback-monitor nodes from the
+shared PipeWire graph. They never open an ALSA hardware PCM and therefore do
+not take the interface away from the DAW.
+
+For simultaneous DAW audio and meters, select the DAW's **JACK** audio system
+(provided by PipeWire-JACK on current Linux desktops), or another PipeWire
+backend. If the DAW opens `hw:EVO8` through direct ALSA, that stream is
+exclusive: device controls and physical-encoder readback still work, but the
+control panel reports that no shared meter stream is available. The playback
+meters reflect audio entering the EVO from the shared graph; direct-monitor
+audio mixed inside the hardware is not observable through that graph.
+
 Demo mode keeps an in-memory device state, so control values persist when
 switching between Master Mix and Artist Mix.
 
