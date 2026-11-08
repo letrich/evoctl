@@ -186,12 +186,13 @@ official EVO 8 mixer documentation and screenshots are used as the visual and
 workflow reference: the user works with source channel strips and a selected
 output mix, not a raw crosspoint table.
 
-The reconstructed EVO 8 mixer therefore groups the ten matrix sources as four
-mono microphone strips and three stereo strips (DAW 1+2, DAW 3+4, and
-Loop-back 1+2). Destinations 0–1 form the green Master Mix for Outputs 1+2;
-destinations 2–3 form the optional yellow Artist Mix for Outputs 3+4. Mic preamp
-controls are revealed from the View menu, and Artist Mix is enabled from the
-Setup menu, matching the official interaction model.
+The current EVO 8 layout deliberately exposes the ten matrix sources as four
+mono microphone strips, four mono DAW strips, and one paired Loop-back 1+2
+strip. This follows the requested Linux workflow rather than reproducing the
+official DAW stereo/mono linking switch. Destinations 0–1 form the green Master
+Mix for Outputs 1+2; destinations 2–3 form the optional yellow Artist Mix for
+Outputs 3+4. Mic preamp controls are revealed from the View menu, and Artist
+Mix is enabled from the Setup menu.
 
 Reference: <https://docs.audient.com/evo8/evo-mixer-configurations/>
 
@@ -233,10 +234,12 @@ and `ev_b830629ac9653fd0a33b658d5b08a74931d98c8cbc3db6e3bd53d26575f66ce`.
 
 The mixer model stores pan as 0..1 and converts it to two dB crosspoints. Its
 curve is built from `pow(10, -0.3)`, producing −6 dB on both sides at centre
-and silence on the opposite side at either extreme. A stereo channel component
-contains two channel pan controls but one linked fader, so evoctl exposes
-independent LEFT and RIGHT pans for paired DAW and loop-back strips and writes
-both destinations for both sources. Static evidence:
+and silence on the opposite side at either extreme. The stereo component
+contains two internal channel objects, but that fact alone does not establish
+that both internal pan controls are simultaneously visible; the official UI
+links them behind its stereo/mono mode. In the current requested layout, DAW
+sources are always independent mono strips. Static evidence for the internal
+model and pan calculation:
 `ev_01b13a6b268c0390de777e884458491208741d15c054a107f8214a66613abb08`,
 `ev_05646173a05d865ad5ed2ebf4132f799a5fd1d40e7666e203cbe68cbbcee2b2e`,
 and `ev_4f41d9d8f904695b87c605afb011f18052cb7a37f5d986a3bfe57ef624a4baac`.

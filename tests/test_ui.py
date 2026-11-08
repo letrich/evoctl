@@ -61,16 +61,34 @@ class UiReadbackTests(unittest.TestCase):
         self.assertEqual(window.input_strips[0].pans[0].value(), 25)
         window.close()
 
-    def test_stereo_pan_changes_both_channel_and_master_indication(self) -> None:
+    def test_daw_playback_channels_are_four_mono_strips(self) -> None:
         window = MainWindow(
             Evo8Controller(DemoTransport()), connected=True, status_text="TEST"
         )
-        window.input_strips[4].fader.setValue(-12)
-        window.input_strips[4].pans[1].setValue(100)
+
+        daw_strips = window.input_strips[4:8]
+
+        self.assertEqual(
+            [strip.spec.name for strip in daw_strips],
+            ["DAW 1", "DAW 2", "DAW 3", "DAW 4"],
+        )
+        self.assertEqual(
+            [strip.spec.sources for strip in daw_strips],
+            [(4,), (5,), (6,), (7,)],
+        )
+        self.assertTrue(all(len(strip.pans) == 1 for strip in daw_strips))
+        window.close()
+
+    def test_loopback_stereo_pan_changes_channel_and_master_indication(self) -> None:
+        window = MainWindow(
+            Evo8Controller(DemoTransport()), connected=True, status_text="TEST"
+        )
+        window.input_strips[8].fader.setValue(-12)
+        window.input_strips[8].pans[1].setValue(100)
         window._meter_reader = FixedMeterReader(
             MeterSnapshot(
-                capture=(SILENCE_DB,) * 6,
-                playback=(SILENCE_DB, -14.0, SILENCE_DB, SILENCE_DB, SILENCE_DB, SILENCE_DB),
+                capture=(SILENCE_DB,) * 5 + (-14.0,),
+                playback=(SILENCE_DB,) * 6,
                 capture_seen=True,
                 playback_seen=True,
             )
@@ -78,24 +96,24 @@ class UiReadbackTests(unittest.TestCase):
 
         window._update_meters()
 
-        self.assertEqual(window.input_strips[4].meter._levels, [SILENCE_DB, -26.0])
+        self.assertEqual(window.input_strips[8].meter._levels, [SILENCE_DB, -26.0])
         self.assertEqual(window.master.meter._levels, [SILENCE_DB, -26.0])
         window.close()
 
-    def test_stereo_pans_write_all_four_crosspoints(self) -> None:
+    def test_loopback_stereo_pans_write_all_four_crosspoints(self) -> None:
         controller = Evo8Controller(DemoTransport())
         window = MainWindow(controller, connected=True, status_text="TEST")
-        strip = window.input_strips[4]
+        strip = window.input_strips[8]
         strip.fader.setValue(-12)
         strip.pans[0].setValue(-100)
         strip.pans[1].setValue(100)
 
         strip.write_effective_level(False)
 
-        self.assertEqual(controller.read_mix_level(4, 0), -12)
-        self.assertEqual(controller.read_mix_level(4, 1), SILENCE_DB)
-        self.assertEqual(controller.read_mix_level(5, 0), SILENCE_DB)
-        self.assertEqual(controller.read_mix_level(5, 1), -12)
+        self.assertEqual(controller.read_mix_level(8, 0), -12)
+        self.assertEqual(controller.read_mix_level(8, 1), SILENCE_DB)
+        self.assertEqual(controller.read_mix_level(9, 0), SILENCE_DB)
+        self.assertEqual(controller.read_mix_level(9, 1), -12)
         window.close()
 
     def test_meters_follow_mix_fader_and_output_volume(self) -> None:
@@ -103,6 +121,9 @@ class UiReadbackTests(unittest.TestCase):
             Evo8Controller(DemoTransport()), connected=True, status_text="TEST"
         )
         window.input_strips[4].fader.setValue(-20)
+        window.input_strips[4].pans[0].setValue(-100)
+        window.input_strips[5].fader.setValue(-20)
+        window.input_strips[5].pans[0].setValue(100)
         window.master.volume.setValue(-6)
         window._meter_reader = FixedMeterReader(
             MeterSnapshot(
@@ -115,7 +136,8 @@ class UiReadbackTests(unittest.TestCase):
 
         window._update_meters()
 
-        self.assertEqual(window.input_strips[4].meter._levels, [-30.0, -32.0])
+        self.assertEqual(window.input_strips[4].meter._levels, [-30.0])
+        self.assertEqual(window.input_strips[5].meter._levels, [-32.0])
         self.assertEqual(window.master.meter._levels, [-36.0, -38.0])
         window.close()
 
@@ -127,7 +149,8 @@ class UiReadbackTests(unittest.TestCase):
         window.select_mix(1)
         window.input_strips[4].fader.setValue(-10)
         window.input_strips[4].pans[0].setValue(-100)
-        window.input_strips[4].pans[1].setValue(100)
+        window.input_strips[5].fader.setValue(-10)
+        window.input_strips[5].pans[0].setValue(100)
         window.master.volume.setValue(0)
         window._meter_reader = FixedMeterReader(
             MeterSnapshot(
@@ -162,7 +185,8 @@ class UiReadbackTests(unittest.TestCase):
             first.input_strips[0].mute.setChecked(True)
             first.input_strips[4].fader.setValue(-10)
             first.input_strips[4].pans[0].setValue(-50)
-            first.input_strips[4].pans[1].setValue(40)
+            first.input_strips[5].fader.setValue(-14)
+            first.input_strips[5].pans[0].setValue(40)
             first.close()
 
             second_transport = DemoTransport()
@@ -183,7 +207,8 @@ class UiReadbackTests(unittest.TestCase):
             self.assertTrue(second.input_strips[0].mute.isChecked())
             self.assertEqual(second.input_strips[4].fader.value(), -10)
             self.assertEqual(second.input_strips[4].pans[0].value(), -50)
-            self.assertEqual(second.input_strips[4].pans[1].value(), 40)
+            self.assertEqual(second.input_strips[5].fader.value(), -14)
+            self.assertEqual(second.input_strips[5].pans[0].value(), 40)
             self.assertEqual(
                 second.controller.read_mix_level(0, 2),
                 -128,
@@ -193,6 +218,44 @@ class UiReadbackTests(unittest.TestCase):
                 -128,
             )
             second.close()
+
+    def test_saved_stereo_daw_settings_migrate_to_four_mono_strips(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = QSettings(
+                str(Path(directory) / "old-evoctl.ini"), QSettings.Format.IniFormat
+            )
+            settings.setValue("state/version", 1)
+            for index, fader, left, right in (
+                (4, -10, -70, 60),
+                (5, -20, -80, 80),
+                (6, -8, -100, 100),
+            ):
+                settings.setValue(f"mix/0/strip/{index}/fader", fader)
+                settings.setValue(f"mix/0/strip/{index}/pan_left", left)
+                settings.setValue(f"mix/0/strip/{index}/pan_right", right)
+
+            window = MainWindow(
+                Evo8Controller(DemoTransport()),
+                connected=False,
+                status_text="TEST",
+                settings=settings,
+            )
+            window.load_preferences()
+
+            self.assertEqual(window.input_strips[4].fader.value(), -10)
+            self.assertEqual(window.input_strips[4].pans[0].value(), -70)
+            self.assertEqual(window.input_strips[5].fader.value(), -10)
+            self.assertEqual(window.input_strips[5].pans[0].value(), 60)
+            self.assertEqual(window.input_strips[6].fader.value(), -20)
+            self.assertEqual(window.input_strips[6].pans[0].value(), -80)
+            self.assertEqual(window.input_strips[7].fader.value(), -20)
+            self.assertEqual(window.input_strips[7].pans[0].value(), 80)
+            self.assertEqual(window.input_strips[8].fader.value(), -8)
+            self.assertEqual(
+                tuple(pan.value() for pan in window.input_strips[8].pans),
+                (-100, 100),
+            )
+            window.close()
 
 
 if __name__ == "__main__":

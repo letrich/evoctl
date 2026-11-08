@@ -131,10 +131,14 @@ MIXER_CHANNELS = (
     MixerChannel("MIC 2", (1,), 1),
     MixerChannel("MIC 3", (2,), 2),
     MixerChannel("MIC 4", (3,), 3),
-    MixerChannel("DAW 1+2", (4, 5)),
-    MixerChannel("DAW 3+4", (6, 7)),
+    MixerChannel("DAW 1", (4,)),
+    MixerChannel("DAW 2", (5,)),
+    MixerChannel("DAW 3", (6,)),
+    MixerChannel("DAW 4", (7,)),
     MixerChannel("LOOP-BACK 1+2", (8, 9)),
 )
+
+MIX_LAYOUT_VERSION = 2
 
 
 class LevelMeter(QWidget):
@@ -737,6 +741,7 @@ class MainWindow(QMainWindow):
         """Restore local mixer semantics and send saved mixes to the EVO."""
         if self.settings is None:
             return
+        self._migrate_mix_settings()
         self._loading_settings = True
         try:
             geometry = self.settings.value("ui/geometry")
@@ -789,8 +794,10 @@ class MainWindow(QMainWindow):
             (snapshot.capture[1],),
             (snapshot.capture[2],),
             (snapshot.capture[3],),
-            snapshot.playback[0:2],
-            snapshot.playback[2:4],
+            (snapshot.playback[0],),
+            (snapshot.playback[1],),
+            (snapshot.playback[2],),
+            (snapshot.playback[3],),
             snapshot.capture[4:6],
         )
         any_solo = any(strip.solo.isChecked() for strip in self.input_strips)
@@ -885,6 +892,64 @@ class MainWindow(QMainWindow):
 
     def _mix_key(self, pair: int, strip: int, field: str) -> str:
         return f"mix/{pair}/strip/{strip}/{field}"
+
+    def _migrate_mix_settings(self) -> None:
+        """Split saved DAW stereo strips into four mono strips once."""
+        if self.settings is None:
+            return
+        version = self.settings.value("state/version", 0, type=int)
+        if version >= MIX_LAYOUT_VERSION:
+            return
+
+        fields = ("fader", "pan", "pan_left", "pan_right", "mute", "solo")
+        for pair in (0, 1):
+            old: dict[int, dict[str, object]] = {}
+            for index in (4, 5, 6):
+                values: dict[str, object] = {}
+                for field in fields:
+                    key = self._mix_key(pair, index, field)
+                    if self.settings.contains(key):
+                        values[field] = self.settings.value(key)
+                old[index] = values
+
+            def copy_common(source: dict[str, object], destination: int) -> None:
+                for field in ("fader", "mute", "solo"):
+                    if field in source:
+                        self.settings.setValue(
+                            self._mix_key(pair, destination, field), source[field]
+                        )
+
+            for old_index, left_index, right_index in ((4, 4, 5), (5, 6, 7)):
+                source = old[old_index]
+                copy_common(source, left_index)
+                copy_common(source, right_index)
+                legacy_pan = source.get("pan")
+                left_pan = source.get("pan_left", legacy_pan if legacy_pan is not None else -100)
+                right_pan = source.get("pan_right", legacy_pan if legacy_pan is not None else 100)
+                self.settings.setValue(
+                    self._mix_key(pair, left_index, "pan"), left_pan
+                )
+                self.settings.setValue(
+                    self._mix_key(pair, right_index, "pan"), right_pan
+                )
+
+            loopback = old[6]
+            copy_common(loopback, 8)
+            legacy_pan = loopback.get("pan")
+            self.settings.setValue(
+                self._mix_key(pair, 8, "pan_left"),
+                loopback.get(
+                    "pan_left", legacy_pan if legacy_pan is not None else -100
+                ),
+            )
+            self.settings.setValue(
+                self._mix_key(pair, 8, "pan_right"),
+                loopback.get(
+                    "pan_right", legacy_pan if legacy_pan is not None else 100
+                ),
+            )
+        self.settings.setValue("state/version", MIX_LAYOUT_VERSION)
+        self.settings.sync()
 
     def _saved_pan_values(
         self, pair: int, index: int, strip: MixerStrip
@@ -1000,7 +1065,7 @@ class MainWindow(QMainWindow):
         if self.settings is None:
             return
         self._save_mix_state(self.active_pair)
-        self.settings.setValue("state/version", 1)
+        self.settings.setValue("state/version", MIX_LAYOUT_VERSION)
         self.settings.setValue("ui/geometry", self.saveGeometry())
         self.settings.setValue("ui/show_preamp", self.preamp_action.isChecked())
         self.settings.setValue("ui/artist_enabled", self.artist_action.isChecked())
