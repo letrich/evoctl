@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import json
+from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QCloseEvent, QPaintEvent, QPainter
 from PySide6.QtWidgets import (
     QDial,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -139,6 +142,8 @@ MIXER_CHANNELS = (
 )
 
 MIX_LAYOUT_VERSION = 2
+CONFIGURATION_FORMAT = "evoctl-mixer-configuration"
+CONFIGURATION_VERSION = 1
 
 
 class LevelMeter(QWidget):
@@ -665,9 +670,9 @@ class MainWindow(QMainWindow):
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("File")
         save = file_menu.addAction("Save Mixer Configuration…")
-        save.setEnabled(False)
+        save.triggered.connect(self._choose_save_configuration)
         open_action = file_menu.addAction("Open Mixer Configuration…")
-        open_action.setEnabled(False)
+        open_action.triggered.connect(self._choose_open_configuration)
         file_menu.addSeparator()
         file_menu.addAction("Quit").triggered.connect(self.close)
 
@@ -687,6 +692,168 @@ class MainWindow(QMainWindow):
         help_menu.addAction("About evoctl").triggered.connect(
             lambda: self.message.setText("evoctl · Linux control for Audient EVO 8")
         )
+
+    def _choose_save_configuration(self) -> None:
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save Mixer Configuration",
+            str(Path.home() / "evo8-mixer.evoctl.json"),
+            "EVO Mixer Configuration (*.evoctl.json *.json)",
+        )
+        if not path:
+            return
+        try:
+            self.save_mixer_configuration(Path(path))
+        except (OSError, RuntimeError, ValueError) as error:
+            self.message.setText(f"Could not save mixer configuration: {error}")
+            self.message.setStyleSheet(f"color: {COLORS['danger']};")
+        else:
+            self.message.setText(f"Mixer configuration saved: {path}")
+            self.message.setStyleSheet(f"color: {COLORS['main']};")
+
+    def _choose_open_configuration(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Open Mixer Configuration",
+            str(Path.home()),
+            "EVO Mixer Configuration (*.evoctl.json *.json)",
+        )
+        if not path:
+            return
+        try:
+            self.open_mixer_configuration(Path(path))
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+            self.message.setText(f"Could not open mixer configuration: {error}")
+            self.message.setStyleSheet(f"color: {COLORS['danger']};")
+        else:
+            self.message.setText(f"Mixer configuration opened: {path}")
+            self.message.setStyleSheet(f"color: {COLORS['main']};")
+
+    def save_mixer_configuration(self, path: Path) -> None:
+        """Save both output mixes without including device-owned controls."""
+        if self.settings is None:
+            raise RuntimeError("mixer settings storage is unavailable")
+        self._save_mix_state(self.active_pair)
+        mixes: dict[str, list[dict[str, object]]] = {}
+        for pair, key in enumerate(("outputs_1_2", "outputs_3_4")):
+            strips = []
+            for index, strip in enumerate(self.input_strips):
+                strips.append(
+                    {
+                        "name": strip.spec.name,
+                        "sources": list(strip.spec.sources),
+                        "fader_db": self.settings.value(
+                            self._mix_key(pair, index, "fader"), 0.0, type=float
+                        ),
+                        "pans": list(self._saved_pan_values(pair, index, strip)),
+                        "mute": self.settings.value(
+                            self._mix_key(pair, index, "mute"), False, type=bool
+                        ),
+                        "solo": self.settings.value(
+                            self._mix_key(pair, index, "solo"), False, type=bool
+                        ),
+                    }
+                )
+            mixes[key] = strips
+        document = {
+            "format": CONFIGURATION_FORMAT,
+            "version": CONFIGURATION_VERSION,
+            "device": "EVO 8",
+            "artist_mix_enabled": self.artist_enabled,
+            "active_mix": self.active_pair,
+            "mixes": mixes,
+        }
+        path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+    def open_mixer_configuration(self, path: Path) -> None:
+        """Validate, store, and apply a mixer configuration file."""
+        if self.settings is None:
+            raise RuntimeError("mixer settings storage is unavailable")
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict):
+            raise ValueError("configuration root must be an object")
+        if document.get("format") != CONFIGURATION_FORMAT:
+            raise ValueError("not an evoctl mixer configuration")
+        if document.get("version") != CONFIGURATION_VERSION:
+            raise ValueError("unsupported mixer configuration version")
+        if document.get("device") != "EVO 8":
+            raise ValueError("configuration is not for EVO 8")
+
+        artist_enabled = document.get("artist_mix_enabled")
+        active_mix = document.get("active_mix")
+        mixes = document.get("mixes")
+        if not isinstance(artist_enabled, bool):
+            raise ValueError("artist_mix_enabled must be true or false")
+        if type(active_mix) is not int or active_mix not in (0, 1):
+            raise ValueError("active_mix must be 0 or 1")
+        if not isinstance(mixes, dict):
+            raise ValueError("mixes must be an object")
+
+        validated: dict[int, list[tuple[float, tuple[int, ...], bool, bool]]] = {}
+        expected = {strip.spec.sources: index for index, strip in enumerate(self.input_strips)}
+        for pair, key in enumerate(("outputs_1_2", "outputs_3_4")):
+            entries = mixes.get(key)
+            if not isinstance(entries, list):
+                raise ValueError(f"{key} must be a list")
+            by_sources: dict[tuple[int, ...], dict[str, object]] = {}
+            for entry in entries:
+                if not isinstance(entry, dict) or not isinstance(entry.get("sources"), list):
+                    raise ValueError(f"{key} contains an invalid channel")
+                sources = tuple(entry["sources"])
+                if not all(type(source) is int for source in sources):
+                    raise ValueError(f"{key} contains invalid source IDs")
+                if sources in by_sources:
+                    raise ValueError(f"{key} contains duplicate source IDs")
+                by_sources[sources] = entry
+            if set(by_sources) != set(expected):
+                raise ValueError(f"{key} does not match the EVO 8 mixer layout")
+
+            states: list[tuple[float, tuple[int, ...], bool, bool]] = []
+            for strip in self.input_strips:
+                entry = by_sources[strip.spec.sources]
+                fader = entry.get("fader_db")
+                pans = entry.get("pans")
+                mute = entry.get("mute")
+                solo = entry.get("solo")
+                if isinstance(fader, bool) or not isinstance(fader, (int, float)):
+                    raise ValueError("fader_db must be a number")
+                if not isinstance(pans, list) or len(pans) != len(strip.pans):
+                    raise ValueError("pan count does not match its channel")
+                if not all(type(pan) is int and -100 <= pan <= 100 for pan in pans):
+                    raise ValueError("pan values must be integers from -100 to 100")
+                if not isinstance(mute, bool) or not isinstance(solo, bool):
+                    raise ValueError("mute and solo must be true or false")
+                fader_value = FADER_STEPS[nearest_fader_index(float(fader))]
+                states.append((fader_value, tuple(pans), mute, solo))
+            validated[pair] = states
+
+        for pair, states in validated.items():
+            for index, (fader, pans, mute, solo) in enumerate(states):
+                self.settings.setValue(self._mix_key(pair, index, "fader"), fader)
+                if len(pans) == 1:
+                    self.settings.setValue(self._mix_key(pair, index, "pan"), pans[0])
+                else:
+                    self.settings.setValue(
+                        self._mix_key(pair, index, "pan_left"), pans[0]
+                    )
+                    self.settings.setValue(
+                        self._mix_key(pair, index, "pan_right"), pans[1]
+                    )
+                self.settings.setValue(self._mix_key(pair, index, "mute"), mute)
+                self.settings.setValue(self._mix_key(pair, index, "solo"), solo)
+        self.settings.setValue("state/version", MIX_LAYOUT_VERSION)
+        self.settings.setValue("ui/artist_enabled", artist_enabled)
+        self.settings.setValue("ui/active_pair", active_mix)
+        self.settings.sync()
+
+        self._loading_settings = True
+        try:
+            self.artist_action.setChecked(artist_enabled)
+            self.select_mix(active_mix if artist_enabled or active_mix == 0 else 0)
+        finally:
+            self._loading_settings = False
+        if self.connected:
+            self._apply_saved_mixes()
 
     def _show_preamp_controls(self, visible: bool) -> None:
         for strip in self.input_strips:

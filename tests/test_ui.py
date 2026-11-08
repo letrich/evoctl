@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -255,6 +256,74 @@ class UiReadbackTests(unittest.TestCase):
                 tuple(pan.value() for pan in window.input_strips[8].pans),
                 (-100, 100),
             )
+            window.close()
+
+    def test_mixer_configuration_round_trip_restores_both_mixes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configuration = root / "session.evoctl.json"
+            first = MainWindow(
+                Evo8Controller(DemoTransport()),
+                connected=True,
+                status_text="TEST",
+                settings=QSettings(
+                    str(root / "first.ini"), QSettings.Format.IniFormat
+                ),
+            )
+            first.input_strips[4].fader.setValue(-12)
+            first.input_strips[4].pans[0].setValue(-30)
+            first.input_strips[4].mute.setChecked(True)
+            first.artist_action.setChecked(True)
+            first.select_mix(1)
+            first.input_strips[5].fader.setValue(-18)
+            first.input_strips[5].pans[0].setValue(55)
+            first.input_strips[5].solo.setChecked(True)
+
+            first.save_mixer_configuration(configuration)
+            document = json.loads(configuration.read_text(encoding="utf-8"))
+
+            self.assertEqual(document["format"], "evoctl-mixer-configuration")
+            self.assertEqual(document["active_mix"], 1)
+            self.assertNotIn("gain", configuration.read_text(encoding="utf-8"))
+
+            second = MainWindow(
+                Evo8Controller(DemoTransport()),
+                connected=True,
+                status_text="TEST",
+                settings=QSettings(
+                    str(root / "second.ini"), QSettings.Format.IniFormat
+                ),
+            )
+            second.open_mixer_configuration(configuration)
+
+            self.assertTrue(second.artist_enabled)
+            self.assertEqual(second.active_pair, 1)
+            self.assertEqual(second.input_strips[5].fader.value(), -18)
+            self.assertEqual(second.input_strips[5].pans[0].value(), 55)
+            self.assertTrue(second.input_strips[5].solo.isChecked())
+            second.select_mix(0)
+            self.assertEqual(second.input_strips[4].fader.value(), -12)
+            self.assertEqual(second.input_strips[4].pans[0].value(), -30)
+            self.assertTrue(second.input_strips[4].mute.isChecked())
+            first.close()
+            second.close()
+
+    def test_invalid_mixer_configuration_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configuration = root / "invalid.json"
+            configuration.write_text('{"format": "something-else"}', encoding="utf-8")
+            window = MainWindow(
+                Evo8Controller(DemoTransport()),
+                connected=True,
+                status_text="TEST",
+                settings=QSettings(
+                    str(root / "settings.ini"), QSettings.Format.IniFormat
+                ),
+            )
+
+            with self.assertRaisesRegex(ValueError, "not an evoctl"):
+                window.open_mixer_configuration(configuration)
             window.close()
 
 

@@ -124,7 +124,7 @@ configuration, and usbmon permission helper:
 ```sh
 ./packaging/debian/build-deb.sh
 sudo apt install linux-headers-$(uname -r)
-sudo apt install ./dist/evoctl_0.1.0_all.deb
+sudo apt install ./dist/evoctl_0.1.1_all.deb
 ```
 
 The package declares Python, PySide6 QtWidgets, DKMS, udev, make, and kmod as
@@ -188,6 +188,22 @@ mixer levels back to the EVO matrix. Preamp gain, 48 V, instrument mode, output
 volume, and output mute are read from the device instead, so physical controls
 remain authoritative. Demo mode uses the same local application settings and
 also keeps an in-memory device state while it is running.
+
+### Save and open mixer configurations
+
+`File > Save Mixer Configuration…` writes a versioned, human-readable
+`.evoctl.json` preset. It contains both Outputs 1+2 and Outputs 3+4 mixes,
+including every strip's fader, pan, mute, and solo state, plus Artist Mix and
+the selected mix. Channels are identified by their hardware source IDs rather
+than their screen position, preventing a layout change from silently assigning
+settings to the wrong source.
+
+`File > Open Mixer Configuration…` validates the file for EVO 8, restores both
+mixes, and sends their crosspoints to a connected interface. Invalid, incomplete,
+duplicate-channel, wrong-device, and unsupported-version files are rejected
+without partially applying them. Device-owned preamp gain, 48 V, instrument
+mode, output volume, and output mute are intentionally not included; those are
+read from the hardware.
 
 ## Tests
 

@@ -5,15 +5,23 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd)
 stage_dir=$(mktemp -d)
 trap 'rm -rf -- "$stage_dir"' EXIT HUP INT TERM
+version=$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' \
+    "$project_dir/src/evoctl/__init__.py")
+[ -n "$version" ] || {
+    echo "Could not determine evoctl version." >&2
+    exit 1
+}
 
-output=${1-"$project_dir/dist/evoctl_0.1.0_all.deb"}
+output=${1-"$project_dir/dist/evoctl_${version}_all.deb"}
 case "$output" in
     /*) ;;
     *) output="$project_dir/$output" ;;
 esac
 
 install -d -m 0755 "$stage_dir/DEBIAN"
-install -m 0644 "$script_dir/control" "$stage_dir/DEBIAN/control"
+sed "s/@VERSION@/$version/" "$script_dir/control.in" \
+    > "$stage_dir/DEBIAN/control"
+chmod 0644 "$stage_dir/DEBIAN/control"
 install -m 0755 "$script_dir/postinst" "$stage_dir/DEBIAN/postinst"
 install -m 0755 "$script_dir/prerm" "$stage_dir/DEBIAN/prerm"
 install -m 0755 "$script_dir/postrm" "$stage_dir/DEBIAN/postrm"
