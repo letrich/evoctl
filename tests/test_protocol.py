@@ -89,6 +89,9 @@ class ProtocolTests(unittest.TestCase):
                 (ControlAddress(EntityId.INPUT, 3, channel), 4): bytes.fromhex(
                     "01000000"
                 ),
+                (ControlAddress(EntityId.INPUT, 4, channel), 4): bytes.fromhex(
+                    "03000000"
+                ),
             }
         )
         state = Evo8Controller(transport).read_input(channel)
@@ -96,6 +99,22 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(state.gain_db, 31.0)
         self.assertFalse(state.muted)
         self.assertTrue(state.stereo_linked)
+        self.assertTrue(state.instrument_mode)
+        self.assertTrue(state.smartgain_selected)
+
+    def test_instrument_write_preserves_other_mode_flags(self) -> None:
+        transport = RecordingTransport()
+        address = ControlAddress(EntityId.INPUT, 4, 0)
+        transport.responses[address, 4] = bytes.fromhex("02000000")
+        controller = Evo8Controller(transport)
+        controller.set_instrument_mode(0, True)
+        self.assertEqual(transport.writes[-1], (address, bytes.fromhex("03000000")))
+        transport.responses[address, 4] = bytes.fromhex("03000000")
+        controller.set_instrument_mode(0, False)
+        self.assertEqual(transport.writes[-1], (address, bytes.fromhex("02000000")))
+
+        with self.assertRaisesRegex(ValueError, "input 1"):
+            controller.set_instrument_mode(1, True)
 
     def test_high_level_output_and_mixer_readback(self) -> None:
         transport = RecordingTransport()

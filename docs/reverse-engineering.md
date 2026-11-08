@@ -50,7 +50,9 @@ The first live read-only snapshot established:
 - no control write was issued during the snapshot;
 - subsequent idempotent writes of the current input-gain, output-volume, and
   mixer-crosspoint values all read back unchanged, covering both 32-bit and
-  16-bit payload paths without changing effective device state.
+  16-bit payload paths without changing effective device state;
+- an idempotent selector-4 write on Input 1 preserved both the complete input
+  state and the other mode-flag bits, then `snd-usb-audio` was reattached.
 
 ## Control-transfer format (observed)
 
@@ -111,12 +113,17 @@ The first four meanings are established by model serialization and UI binding:
 | 1 | preamp gain | input index, zero-based | signed Q8.8 in 32 bits |
 | 2 | input mute | input index, zero-based | 32-bit boolean |
 | 3 | stereo link | input index, zero-based | 32-bit boolean |
-| 4 | unknown per-input flags | input index | 32-bit bit field |
-| 5 | unknown global input state | channel 0 | 32-bit value |
+| 4 | mode flags: bit 0 instrument, bit 1 Smartgain selection | input index | 32-bit bit field |
+| 5 | global Smartgain state; enum meanings still under analysis | channel 0 | 32-bit value |
 | 7 | unknown per-input state | input index | 32-bit value |
 
 Evidence: `ev_a2d8f6651adc3a93d645b27d2745c193c7cb06352eff929106e408f2f981b156`
 and `ev_1c8e398811ec1bc702e301bca4f585c1ed2d81d26c02560545b5b4228c35779a`.
+Instrument/Smartgain flag recovery is corroborated by
+`ev_357563ac4df81ee70f2b9ccd9f83980fc7c010fd0f39ef11705019d03399d34d`.
+The common application model carries the flag per input, while the EVO 8 UI
+exposes instrument mode only for Input 1, matching the device's single front
+JFET instrument input.
 
 ### Output control (`0x3b`)
 
@@ -143,7 +150,24 @@ wValue = 0x0100 | (source_index * 4 + destination_index)
 
 The payload is signed 16-bit little-endian Q8.8 dB. `-128 dB` is treated as
 off. This layout is corroborated by the upstream `evoctl` packet capture and
-implementation.
+implementation, and all 40 addresses were read successfully from the connected
+EVO 8. The Linux UI does not expose this transport representation directly.
+
+## Official mixer user experience
+
+The Windows binary remains the authority for control semantics. Audient's
+official EVO 8 mixer documentation and screenshots are used as the visual and
+workflow reference: the user works with source channel strips and a selected
+output mix, not a raw crosspoint table.
+
+The reconstructed EVO 8 mixer therefore groups the ten matrix sources as four
+mono microphone strips and three stereo strips (DAW 1+2, DAW 3+4, and
+Loop-back 1+2). Destinations 0–1 form the green Master Mix for Outputs 1+2;
+destinations 2–3 form the optional yellow Artist Mix for Outputs 3+4. Mic preamp
+controls are revealed from the View menu, and Artist Mix is enabled from the
+Setup menu, matching the official interaction model.
+
+Reference: <https://docs.audient.com/evo8/evo-mixer-configurations/>
 
 ## Internal classes observed in the Windows application
 

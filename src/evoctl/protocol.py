@@ -37,9 +37,14 @@ class InputSelector(IntEnum):
     GAIN = 1
     MUTE = 2
     STEREO_LINK = 3
-    UNKNOWN_FLAGS = 4
-    UNKNOWN_GLOBAL = 5
+    MODE_FLAGS = 4
+    SMARTGAIN_STATE = 5
     UNKNOWN_AUX = 7
+
+
+class InputModeFlag(IntEnum):
+    INSTRUMENT = 1 << 0
+    SMARTGAIN_SELECTED = 1 << 1
 
 
 class OutputSelector(IntEnum):

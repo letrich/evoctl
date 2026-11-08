@@ -8,10 +8,12 @@ from typing import Protocol
 from .protocol import (
     ControlAddress,
     EntityId,
+    InputModeFlag,
     InputSelector,
     OutputSelector,
     decode_q8_8,
     encode_bool,
+    encode_i32,
     encode_q8_8,
     mixer_crosspoint,
 )
@@ -23,6 +25,8 @@ class InputState:
     gain_db: float
     muted: bool
     stereo_linked: bool
+    instrument_mode: bool
+    smartgain_selected: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +57,11 @@ class Evo8Controller:
     def set_stereo_link(self, channel: int, enabled: bool) -> None:
         self._input(InputSelector.STEREO_LINK, channel, encode_bool(enabled))
 
+    def set_instrument_mode(self, channel: int, enabled: bool) -> None:
+        if channel != 0:
+            raise ValueError("EVO 8 instrument mode is available on input 1")
+        self._set_input_mode_flag(channel, InputModeFlag.INSTRUMENT, enabled)
+
     def set_output_volume(self, channel: int, volume_db: float) -> None:
         self._output(OutputSelector.VOLUME, channel, encode_q8_8(volume_db, width=4))
 
@@ -67,6 +76,7 @@ class Evo8Controller:
 
     def read_input(self, channel: int) -> InputState:
         self._validate_input_channel(channel)
+        mode_flags = self._read_i32(EntityId.INPUT, InputSelector.MODE_FLAGS, channel)
         return InputState(
             phantom_power=self._read_bool(
                 EntityId.INPUT, InputSelector.PHANTOM_POWER, channel
@@ -76,6 +86,8 @@ class Evo8Controller:
             stereo_linked=self._read_bool(
                 EntityId.INPUT, InputSelector.STEREO_LINK, channel
             ),
+            instrument_mode=bool(mode_flags & InputModeFlag.INSTRUMENT),
+            smartgain_selected=bool(mode_flags & InputModeFlag.SMARTGAIN_SELECTED),
         )
 
     def read_output(self, channel: int) -> OutputState:
@@ -108,6 +120,19 @@ class Evo8Controller:
         return decode_q8_8(
             self.transport.read(ControlAddress(entity, selector, channel), width)
         )
+
+    def _read_i32(self, entity: int, selector: int, channel: int) -> int:
+        payload = self.transport.read(ControlAddress(entity, selector, channel), 4)
+        return int.from_bytes(payload, "little", signed=True)
+
+    def _set_input_mode_flag(self, channel: int, flag: int, enabled: bool) -> None:
+        self._validate_input_channel(channel)
+        flags = self._read_i32(EntityId.INPUT, InputSelector.MODE_FLAGS, channel)
+        if enabled:
+            flags |= int(flag)
+        else:
+            flags &= ~int(flag)
+        self._input(InputSelector.MODE_FLAGS, channel, encode_i32(flags))
 
     @staticmethod
     def _validate_input_channel(channel: int) -> None:

@@ -12,7 +12,7 @@ milestone contains:
 - an EVO 8 protocol profile for input, output, and mixer controls;
 - a `libusb` transport that claims only AudioControl interface 0 and restores
   `snd-usb-audio` when it closes;
-- a PySide6 control-panel shell with Inputs, Outputs, and Routing pages;
+- a PySide6 mixer modeled on the official EVO 8 application workflow;
 - a demo mode and protocol unit tests that do not touch hardware.
 
 ## Install dependencies
@@ -66,7 +66,7 @@ reattached when the transport closes. If access is still denied, confirm
 membership with `id -nG`; log out and back in after adding yourself to
 `plugdev`.
 
-## Run the current UI
+## Run the mixer
 
 From the repository root:
 
@@ -77,7 +77,22 @@ PYTHONPATH=src python3 -m evoctl --demo
 Omit `--demo` to open USB device `2708:0007`. The process needs permission to
 open the corresponding `/dev/bus/usb` node. Hardware writes happen only after
 an explicit UI change. On startup, the UI reads the current input, output, and
-routing state from the interface.
+mixer state from the interface.
+
+The main window follows the official EVO Mixer workflow instead of presenting
+the 10×4 hardware matrix directly:
+
+- Mic 1–4, DAW 1+2, DAW 3+4, and Loop-back 1+2 appear as mixer strips;
+- Outputs 1+2 is the green-accented Master Mix;
+- `Setup > Enable Artist Mix` enables the independent, yellow-accented mix for
+  Outputs 3+4;
+- `View > Show Mic Pre Controls` adds gain, 48 V, and the applicable instrument
+  control to the microphone strips.
+
+Mixer faders and pan controls are backed by the EVO 8 mixer-unit crosspoints;
+the matrix is an implementation detail and is not shown as a separate routing
+page. Signal meters are visual placeholders until the device's live metering
+transport has been recovered, so they do not yet display audio levels.
 
 ## Tests
 
