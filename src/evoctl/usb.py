@@ -42,6 +42,16 @@ class _LibUsb:
         self.lib.libusb_open_device_with_vid_pid.restype = ctypes.c_void_p
         self.lib.libusb_close.argtypes = [ctypes.c_void_p]
         self.lib.libusb_close.restype = None
+        self.lib.libusb_kernel_driver_active.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.lib.libusb_kernel_driver_active.restype = ctypes.c_int
+        self.lib.libusb_detach_kernel_driver.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.lib.libusb_detach_kernel_driver.restype = ctypes.c_int
+        self.lib.libusb_attach_kernel_driver.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.lib.libusb_attach_kernel_driver.restype = ctypes.c_int
+        self.lib.libusb_claim_interface.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.lib.libusb_claim_interface.restype = ctypes.c_int
+        self.lib.libusb_release_interface.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        self.lib.libusb_release_interface.restype = ctypes.c_int
         self.lib.libusb_control_transfer.argtypes = [
             ctypes.c_void_p,
             ctypes.c_uint8,
@@ -65,21 +75,29 @@ class _LibUsb:
 class EvoUsbTransport:
     """Open one EVO and issue endpoint-zero control requests.
 
-    This intentionally does not claim or detach AudioControl interface 0. That
-    lets us test whether normal controls can coexist with snd-usb-audio instead
-    of disrupting active audio streams.
+    Linux usbfs requires ownership of AudioControl interface 0 for EVO class
+    requests. The transport therefore detaches only that interface, claims it,
+    and reattaches the kernel driver when closed. Streaming interfaces remain
+    untouched.
     """
 
     profile: DeviceProfile = EVO8
     timeout_ms: int = 1000
+    control_interface: int = 0
+    claim_control_interface: bool = True
+    detach_kernel_driver: bool = True
     _api: _LibUsb = field(init=False, repr=False)
     _context: ctypes.c_void_p = field(init=False, repr=False)
     _handle: ctypes.c_void_p = field(init=False, repr=False)
+    _interface_claimed: bool = field(init=False, repr=False)
+    _kernel_driver_detached: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._api = _LibUsb()
         self._context = ctypes.c_void_p()
         self._handle = ctypes.c_void_p()
+        self._interface_claimed = False
+        self._kernel_driver_detached = False
 
     @property
     def is_open(self) -> bool:
@@ -104,9 +122,25 @@ class EvoUsbTransport:
                 f"{self.profile.product_id:04x}) is unavailable or not permitted"
             )
         self._handle = ctypes.c_void_p(handle)
+        if self.claim_control_interface:
+            try:
+                self._claim_interface()
+            except Exception:
+                self.close()
+                raise
 
     def close(self) -> None:
         if self.is_open:
+            if self._interface_claimed:
+                self._api.lib.libusb_release_interface(
+                    self._handle, self.control_interface
+                )
+                self._interface_claimed = False
+            if self._kernel_driver_detached:
+                self._api.lib.libusb_attach_kernel_driver(
+                    self._handle, self.control_interface
+                )
+                self._kernel_driver_detached = False
             self._api.lib.libusb_close(self._handle)
             self._handle = ctypes.c_void_p()
         if self._context.value:
@@ -119,6 +153,41 @@ class EvoUsbTransport:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+    def _claim_interface(self) -> None:
+        active = self._api.lib.libusb_kernel_driver_active(
+            self._handle, self.control_interface
+        )
+        if active < 0:
+            raise UsbError(
+                "could not inspect the AudioControl kernel driver: "
+                f"{self._api.error_name(active)}"
+            )
+        if active == 1:
+            if not self.detach_kernel_driver:
+                raise UsbError(
+                    "snd-usb-audio owns AudioControl interface 0; "
+                    "kernel-driver detachment is disabled"
+                )
+            result = self._api.lib.libusb_detach_kernel_driver(
+                self._handle, self.control_interface
+            )
+            if result < 0:
+                raise UsbError(
+                    "could not detach AudioControl interface 0: "
+                    f"{self._api.error_name(result)}"
+                )
+            self._kernel_driver_detached = True
+
+        result = self._api.lib.libusb_claim_interface(
+            self._handle, self.control_interface
+        )
+        if result < 0:
+            raise UsbError(
+                "could not claim AudioControl interface 0: "
+                f"{self._api.error_name(result)}"
+            )
+        self._interface_claimed = True
 
     def transfer(self, transfer: ControlTransfer) -> bytes:
         if not self.is_open:

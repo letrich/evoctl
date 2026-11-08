@@ -33,9 +33,24 @@ The connected interface enumerates as:
 - interfaces 0-2: USB Audio Class 2, bound to `snd-usb-audio`
 - interface 3: USB DFU class, intentionally not used by normal controls
 
-The execution sandbox can read sysfs descriptors but does not expose
-`/dev/bus/usb` or `/dev/snd`, so live transfers cannot yet be issued from this
-process.
+Live USB and ALSA device nodes are available after installing the repository's
+udev rule. Opening the USB device alone is insufficient: class-interface reads
+return `LIBUSB_ERROR_IO` while `snd-usb-audio` owns AudioControl interface 0.
+Temporarily detaching and claiming only interface 0 makes the same reads
+succeed. Releasing the interface and reattaching the driver has been verified;
+the playback and capture streaming interfaces are never detached.
+
+The first live read-only snapshot established:
+
+- all four input selector-1 values decoded to `-8.0 dB`, matching ALSA's
+  `Mic Playback Volume` minimum;
+- phantom, mute, and stereo-link selectors were false on all four inputs;
+- all four output selector-0 values decoded to `-127.0 dB`, with mute false;
+- all 40 mixer-unit crosspoints were readable as signed 16-bit Q8.8;
+- no control write was issued during the snapshot;
+- subsequent idempotent writes of the current input-gain, output-volume, and
+  mixer-crosspoint values all read back unchanged, covering both 32-bit and
+  16-bit payload paths without changing effective device state.
 
 ## Control-transfer format (observed)
 
@@ -76,7 +91,14 @@ The device descriptors and application code expose these entity IDs:
 | input control extension unit | `0x3a` | observed in application and historical captures |
 | output control extension unit | `0x3b` | observed in application and historical captures |
 | standard mixer unit | `0x3c` | observed in descriptors and historical captures |
-| auxiliary extension unit | `0x3e` | observed; role still under analysis |
+| optional auxiliary helper | `0x3e` | looked up by generic app code; absent from the connected EVO 8 descriptors |
+
+The generic Windows application also contains optional models for a blend
+mixer at entity `0x38` and a monitor controller at entity `0x36`. Neither
+entity occurs in the connected EVO 8's active descriptor graph, so these are
+not treated as EVO 8 controls. Static Evidence IDs:
+`ev_4ec785b4eb0ca50d100bc6ae6dcfcc4ad13c49a82a02866dfebd169abad9d759`
+and `ev_c4670e2389ae3a2f1781ee8242b12871bcde6c2fad8ebd3f5c152c4ece9da24b`.
 
 ### Input control (`0x3a`)
 

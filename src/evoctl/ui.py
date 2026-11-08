@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .controller import Evo8Controller
+from .controller import Evo8Controller, InputState, OutputState
 
 
 COLORS = {
@@ -47,6 +47,7 @@ QWidget {{
     font-size: 13px;
 }}
 QMainWindow {{ background: {COLORS['background']}; }}
+QLabel {{ background: transparent; }}
 QFrame#topBar, QFrame#card {{
     background: {COLORS['panel']};
     border: 1px solid {COLORS['line']};
@@ -169,14 +170,14 @@ class InputStrip(QFrame):
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
-        self.value = QLabel("0 dB")
+        self.value = QLabel("−8 dB")
         self.value.setObjectName("value")
         self.value.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.value)
 
         self.gain = QSlider(Qt.Orientation.Vertical)
-        self.gain.setRange(0, 58)
-        self.gain.setValue(0)
+        self.gain.setRange(-8, 50)
+        self.gain.setValue(-8)
         self.gain.setMinimumHeight(230)
         self.gain.setTickInterval(6)
         self.gain.setTickPosition(QSlider.TickPosition.TicksBothSides)
@@ -185,14 +186,27 @@ class InputStrip(QFrame):
         layout.addWidget(self.gain, 1, Qt.AlignmentFlag.AlignHCenter)
 
         buttons = QHBoxLayout()
-        phantom = self._toggle("48V", self._set_phantom)
-        mute = self._toggle("MUTE", self._set_mute, danger=True)
-        buttons.addWidget(phantom)
-        buttons.addWidget(mute)
+        self.phantom = self._toggle("48V", self._set_phantom)
+        self.mute = self._toggle("MUTE", self._set_mute, danger=True)
+        buttons.addWidget(self.phantom)
+        buttons.addWidget(self.mute)
         layout.addLayout(buttons)
 
-        link = self._toggle("STEREO LINK", self._set_link)
-        layout.addWidget(link)
+        self.link = self._toggle("STEREO LINK", self._set_link)
+        layout.addWidget(self.link)
+
+    def apply_state(self, state: InputState) -> None:
+        for widget in (self.gain, self.phantom, self.mute, self.link):
+            widget.blockSignals(True)
+        try:
+            self.gain.setValue(round(state.gain_db))
+            self.value.setText(f"{state.gain_db:g} dB")
+            self.phantom.setChecked(state.phantom_power)
+            self.mute.setChecked(state.muted)
+            self.link.setChecked(state.stereo_linked)
+        finally:
+            for widget in (self.gain, self.phantom, self.mute, self.link):
+                widget.blockSignals(False)
 
     def _toggle(
         self,
@@ -259,11 +273,22 @@ class OutputStrip(QFrame):
         self.volume.sliderReleased.connect(self._set_volume)
         layout.addWidget(self.volume, 1, Qt.AlignmentFlag.AlignHCenter)
 
-        mute = QPushButton("MUTE")
-        mute.setObjectName("danger")
-        mute.setCheckable(True)
-        mute.toggled.connect(self._set_mute)
-        layout.addWidget(mute)
+        self.mute = QPushButton("MUTE")
+        self.mute.setObjectName("danger")
+        self.mute.setCheckable(True)
+        self.mute.toggled.connect(self._set_mute)
+        layout.addWidget(self.mute)
+
+    def apply_state(self, state: OutputState) -> None:
+        self.volume.blockSignals(True)
+        self.mute.blockSignals(True)
+        try:
+            self.volume.setValue(round(state.volume_db))
+            self._show_value(round(state.volume_db))
+            self.mute.setChecked(state.muted)
+        finally:
+            self.volume.blockSignals(False)
+            self.mute.blockSignals(False)
 
     def _show_value(self, value: int) -> None:
         self.value.setText("−∞" if value <= -128 else f"{value} dB")
@@ -291,6 +316,9 @@ class MainWindow(QMainWindow):
         self.resize(1180, 760)
         self.setMinimumSize(900, 620)
         self.setStyleSheet(STYLE)
+        self.input_strips: list[InputStrip] = []
+        self.output_strips: list[OutputStrip] = []
+        self.mix_levels: dict[tuple[int, int], QDoubleSpinBox] = {}
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -334,8 +362,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(12)
         for channel in range(4):
-            layout.addWidget(InputStrip(channel, self.controller, self.invoke), 1)
-        layout.addStretch(1)
+            strip = InputStrip(channel, self.controller, self.invoke)
+            self.input_strips.append(strip)
+            layout.addWidget(strip, 1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(content)
@@ -346,8 +375,11 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(page)
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(14)
-        layout.addWidget(OutputStrip("MAIN OUTPUT", 0, self.controller, self.invoke))
-        layout.addWidget(OutputStrip("HEADPHONES", 2, self.controller, self.invoke))
+        main = OutputStrip("MAIN OUTPUT", 0, self.controller, self.invoke)
+        headphones = OutputStrip("HEADPHONES", 2, self.controller, self.invoke)
+        self.output_strips.extend((main, headphones))
+        layout.addWidget(main)
+        layout.addWidget(headphones)
         layout.addStretch(1)
         return page
 
@@ -389,9 +421,31 @@ class MainWindow(QMainWindow):
                         lambda: self.controller.set_mix_level(s, d, widget.value())
                     )
                 )
+                self.mix_levels[source, destination] = level
                 table.setCellWidget(source, destination, level)
         layout.addWidget(table, 1)
         return page
+
+    def load_state(self) -> None:
+        try:
+            for channel, strip in enumerate(self.input_strips):
+                strip.apply_state(self.controller.read_input(channel))
+            for channel, strip in ((0, self.output_strips[0]), (2, self.output_strips[1])):
+                strip.apply_state(self.controller.read_output(channel))
+            for (source, destination), widget in self.mix_levels.items():
+                widget.blockSignals(True)
+                try:
+                    widget.setValue(
+                        self.controller.read_mix_level(source, destination)
+                    )
+                finally:
+                    widget.blockSignals(False)
+        except Exception as error:
+            self.message.setText(f"State readback failed: {error}")
+            self.message.setStyleSheet(f"color: {COLORS['danger']};")
+        else:
+            self.message.setText("Hardware state loaded")
+            self.message.setStyleSheet(f"color: {COLORS['accent']};")
 
     def invoke(self, operation: Callable[[], None]) -> None:
         try:

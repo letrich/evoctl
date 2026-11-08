@@ -10,7 +10,8 @@ milestone contains:
 
 - a documented, byte-accurate UAC2 control-transfer model;
 - an EVO 8 protocol profile for input, output, and mixer controls;
-- a small `libusb` transport that does not detach the audio driver by default;
+- a `libusb` transport that claims only AudioControl interface 0 and restores
+  `snd-usb-audio` when it closes;
 - a PySide6 control-panel shell with Inputs, Outputs, and Routing pages;
 - a demo mode and protocol unit tests that do not touch hardware.
 
@@ -58,9 +59,12 @@ with EvoUsbTransport():
 PY
 ```
 
-Opening the device for this check does not issue a control read or write and
-does not detach `snd-usb-audio`. If access is still denied, confirm membership
-with `id -nG`; log out and back in after adding yourself to `plugdev`.
+Opening the device for this check does not issue a control read or write. Linux
+requires evoctl to detach and claim AudioControl interface 0 while the process
+is open; the streaming interfaces are not detached, and `snd-usb-audio` is
+reattached when the transport closes. If access is still denied, confirm
+membership with `id -nG`; log out and back in after adding yourself to
+`plugdev`.
 
 ## Run the current UI
 
@@ -72,7 +76,8 @@ PYTHONPATH=src python3 -m evoctl --demo
 
 Omit `--demo` to open USB device `2708:0007`. The process needs permission to
 open the corresponding `/dev/bus/usb` node. Hardware writes happen only after
-an explicit UI change.
+an explicit UI change. On startup, the UI reads the current input, output, and
+routing state from the interface.
 
 ## Tests
 

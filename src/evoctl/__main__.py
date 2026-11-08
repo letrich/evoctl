@@ -69,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
             app.aboutToQuit.connect(usb.close)
 
     window = MainWindow(Evo8Controller(transport), connected=connected, status_text=status)
+    if connected and not args.demo:
+        window.load_state()
     window.show()
     return app.exec()
 

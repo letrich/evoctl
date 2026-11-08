@@ -20,12 +20,15 @@ from evoctl.protocol import (
 class RecordingTransport:
     def __init__(self) -> None:
         self.writes: list[tuple[ControlAddress, bytes]] = []
+        self.reads: list[tuple[ControlAddress, int]] = []
+        self.responses: dict[tuple[ControlAddress, int], bytes] = {}
 
     def write(self, address: ControlAddress, payload: bytes) -> None:
         self.writes.append((address, bytes(payload)))
 
     def read(self, address: ControlAddress, length: int = 4) -> bytes:
-        return bytes(length)
+        self.reads.append((address, length))
+        return self.responses.get((address, length), bytes(length))
 
 
 class ProtocolTests(unittest.TestCase):
@@ -68,6 +71,50 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(address.w_value, 0x0112)
         self.assertEqual(address.w_index, 0x3C00)
         self.assertEqual(payload, bytes.fromhex("80f3"))
+
+    def test_high_level_input_readback(self) -> None:
+        transport = RecordingTransport()
+        channel = 2
+        transport.responses.update(
+            {
+                (ControlAddress(EntityId.INPUT, 0, channel), 4): bytes.fromhex(
+                    "01000000"
+                ),
+                (ControlAddress(EntityId.INPUT, 1, channel), 4): bytes.fromhex(
+                    "001f0000"
+                ),
+                (ControlAddress(EntityId.INPUT, 2, channel), 4): bytes.fromhex(
+                    "00000000"
+                ),
+                (ControlAddress(EntityId.INPUT, 3, channel), 4): bytes.fromhex(
+                    "01000000"
+                ),
+            }
+        )
+        state = Evo8Controller(transport).read_input(channel)
+        self.assertTrue(state.phantom_power)
+        self.assertEqual(state.gain_db, 31.0)
+        self.assertFalse(state.muted)
+        self.assertTrue(state.stereo_linked)
+
+    def test_high_level_output_and_mixer_readback(self) -> None:
+        transport = RecordingTransport()
+        transport.responses.update(
+            {
+                (ControlAddress(EntityId.OUTPUT, 0, 0), 4): bytes.fromhex(
+                    "0081ffff"
+                ),
+                (ControlAddress(EntityId.OUTPUT, 1, 0), 4): bytes.fromhex(
+                    "01000000"
+                ),
+                (mixer_crosspoint(4, 2), 2): bytes.fromhex("80f3"),
+            }
+        )
+        controller = Evo8Controller(transport)
+        output = controller.read_output(0)
+        self.assertEqual(output.volume_db, -127.0)
+        self.assertTrue(output.muted)
+        self.assertEqual(controller.read_mix_level(4, 2), -12.5)
 
 
 if __name__ == "__main__":
